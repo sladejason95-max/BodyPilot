@@ -1,8 +1,0 @@
-2026/04/26-09:17:26.695 1d28 Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass57\edge-profile\Default\Local Storage\leveldb since it was missing.
-2026/04/26-09:17:26.728 1d28 Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass57\edge-profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/04/26-09:19:26.986 a57c Level-0 table #5: started
-2026/04/26-09:19:26.993 a57c Level-0 table #5: 25163 bytes OK
-2026/04/26-09:19:26.997 a57c Delete type=0 #3
-2026/04/26-09:21:26.988 a57c Level-0 table #7: started
-2026/04/26-09:21:26.993 a57c Level-0 table #7: 25605 bytes OK
-2026/04/26-09:21:26.997 a57c Delete type=0 #4

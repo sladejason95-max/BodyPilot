@@ -1,5 +1,0 @@
-2026/04/26-09:52:47.260 a66c Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass59\edge-profile\Default\Sync Data\LevelDB since it was missing.
-2026/04/26-09:52:47.281 a66c Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass59\edge-profile\Default\Sync Data\LevelDB/MANIFEST-000001
-2026/04/26-09:53:50.114 b0f8 Level-0 table #5: started
-2026/04/26-09:53:50.122 b0f8 Level-0 table #5: 148268 bytes OK
-2026/04/26-09:53:50.130 b0f8 Delete type=0 #3

@@ -1,5 +1,0 @@
-2026/04/25-12:45:32.923 8508 Creating DB C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-premium-final\Default\EdgeCoupons/coupons_data.db since it was missing.
-2026/04/25-12:45:32.928 8508 Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-premium-final\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
-2026/04/25-12:45:33.031 3b2c Level-0 table #5: started
-2026/04/25-12:45:33.034 3b2c Level-0 table #5: 682121 bytes OK
-2026/04/25-12:45:33.035 3b2c Delete type=0 #3

@@ -1,5 +1,0 @@
-2026/04/26-10:18:38.578 8c04 Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass61\edge-profile\Default\EdgeCoupons/coupons_data.db since it was missing.
-2026/04/26-10:18:38.596 8c04 Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass61\edge-profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
-2026/04/26-10:18:38.693 886c Level-0 table #5: started
-2026/04/26-10:18:38.695 886c Level-0 table #5: 682121 bytes OK
-2026/04/26-10:18:38.696 886c Delete type=0 #3
