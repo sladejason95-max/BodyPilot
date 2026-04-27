@@ -1,0 +1,5 @@
+2026/04/26-10:36:09.808 bacc Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass62\edge-profile\Default\Sync Data\LevelDB since it was missing.
+2026/04/26-10:36:09.815 bacc Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass62\edge-profile\Default\Sync Data\LevelDB/MANIFEST-000001
+2026/04/26-10:37:11.574 bacc Level-0 table #5: started
+2026/04/26-10:37:11.578 bacc Level-0 table #5: 149784 bytes OK
+2026/04/26-10:37:11.579 bacc Delete type=0 #3

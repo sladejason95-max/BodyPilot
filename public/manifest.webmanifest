@@ -1,0 +1,38 @@
+{
+  "name": "BodyPilot",
+  "short_name": "BodyPilot",
+  "description": "BodyPilot is a premium mobile coaching system for food, training, check-ins, reminders, and daily execution.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#F8FAFC",
+  "theme_color": "#06B6D4",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["health", "fitness", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Log food",
+      "short_name": "Food",
+      "description": "Open BodyPilot food logging.",
+      "url": "/#nutrition",
+      "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    },
+    {
+      "name": "Start today",
+      "short_name": "Today",
+      "description": "Open today's BodyPilot execution view.",
+      "url": "/#tracker",
+      "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+    }
+  ]
+}

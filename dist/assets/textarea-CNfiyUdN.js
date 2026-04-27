@@ -1,0 +1,1 @@
+import{p as a}from"./vendor-CnnH_HWh.js";function r(...e){return e.filter(Boolean).join(" ")}function o({className:e="",...t}){return a.jsx("textarea",{className:r("premium-input min-h-[110px] w-full px-3.5 py-3 text-sm","placeholder:text-slate-400 resize-y dark:placeholder:text-slate-500","disabled:cursor-not-allowed disabled:opacity-50",e),...t})}export{o as T};

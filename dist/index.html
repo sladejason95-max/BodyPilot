@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#f8fbff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#020617" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="BodyPilot" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="application-name" content="BodyPilot" />
+    <meta name="description" content="BodyPilot is a premium mobile coaching system for food, training, scheduling, check-ins, and daily execution." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
+    <link rel="apple-touch-icon" href="/app-icon.svg" />
+    <title>BodyPilot</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --boot-bg: #f8fafc;
+        --boot-panel: rgba(255, 255, 255, 0.92);
+        --boot-border: rgba(15, 23, 42, 0.08);
+        --boot-text: #0f172a;
+        --boot-subtle: #64748b;
+        --boot-track: rgba(15, 23, 42, 0.08);
+        --boot-fill: #0f172a;
+      }
+
+      html.dark {
+        color-scheme: dark;
+        --boot-bg: #020617;
+        --boot-panel: rgba(15, 23, 42, 0.88);
+        --boot-border: rgba(255, 255, 255, 0.12);
+        --boot-text: #e2e8f0;
+        --boot-subtle: #94a3b8;
+        --boot-track: rgba(255, 255, 255, 0.12);
+        --boot-fill: #f8fafc;
+      }
+
+      html,
+      body {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+        font-family: "Sora", "Avenir Next", "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        text-rendering: optimizeLegibility;
+      }
+
+      #root {
+        min-height: 100vh;
+      }
+
+      #boot-shell {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: var(--boot-bg);
+        transition: opacity 220ms ease, visibility 220ms ease;
+      }
+
+      body[data-app-ready="true"] #boot-shell {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+
+      .boot-card {
+        width: min(360px, calc(100vw - 48px));
+        border-radius: 28px;
+        border: 1px solid var(--boot-border);
+        background: var(--boot-panel);
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+        padding: 28px;
+        text-align: center;
+        backdrop-filter: blur(18px);
+      }
+
+      .boot-logo {
+        display: grid;
+        place-items: center;
+        height: 76px;
+        width: 76px;
+        margin: 0 auto;
+        border-radius: 24px;
+        box-shadow: 0 18px 32px rgba(15, 23, 42, 0.18);
+      }
+
+      .boot-logo img {
+        display: block;
+        height: 76px;
+        width: 76px;
+        border-radius: 24px;
+      }
+
+      .boot-title {
+        margin: 18px 0 0;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: 0;
+        color: var(--boot-text);
+      }
+
+      .boot-copy {
+        margin: 8px 0 0;
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--boot-subtle);
+      }
+
+      .boot-bar {
+        height: 4px;
+        border-radius: 999px;
+        background: var(--boot-track);
+        overflow: hidden;
+        margin-top: 24px;
+      }
+
+      .boot-bar > span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--boot-fill);
+        animation: boot-load 1.2s ease-in-out infinite;
+        transform-origin: left center;
+      }
+
+      @keyframes boot-load {
+        0% {
+          transform: translateX(-100%) scaleX(0.45);
+        }
+        55% {
+          transform: translateX(20%) scaleX(0.7);
+        }
+        100% {
+          transform: translateX(120%) scaleX(0.45);
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .boot-bar > span {
+          animation: none;
+          transform: none;
+          width: 72%;
+        }
+      }
+    </style>
+    <script>
+      (function () {
+        try {
+          document.body && document.body.setAttribute("data-app-ready", "false");
+          var saved = window.localStorage.getItem("bodypilot-v1") || window.localStorage.getItem("stage-prep-elite-v2");
+          if (!saved) return;
+          var parsed = JSON.parse(saved);
+          if (parsed && parsed.appTheme === "dark") {
+            document.documentElement.classList.add("dark");
+            document.documentElement.style.colorScheme = "dark";
+          } else {
+            document.documentElement.classList.remove("dark");
+            document.documentElement.style.colorScheme = "light";
+          }
+        } catch (error) {
+          document.documentElement.classList.remove("dark");
+          document.documentElement.style.colorScheme = "light";
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-ytB-q3Sn.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-CnnH_HWh.js">
+    <link rel="modulepreload" crossorigin href="/assets/app-engines-CC35peC0.js">
+    <link rel="modulepreload" crossorigin href="/assets/app-infrastructure-DWxSF2v1.js">
+    <link rel="modulepreload" crossorigin href="/assets/icons-uJfzeJQ3.js">
+    <link rel="modulepreload" crossorigin href="/assets/nutrition-wH_ekIpZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/app-data-mUkaxLyn.js">
+    <link rel="modulepreload" crossorigin href="/assets/motion-DzF7s3YQ.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-Dbk4RVfp.css">
+  </head>
+  <body data-app-ready="false">
+    <div id="boot-shell" aria-hidden="true">
+      <div class="boot-card">
+        <div class="boot-logo">
+          <img src="/app-icon.svg" alt="" />
+        </div>
+        <h1 class="boot-title">Loading BodyPilot</h1>
+        <p class="boot-copy">Setting up your workspace.</p>
+        <div class="boot-bar"><span></span></div>
+      </div>
+    </div>
+    <div id="root"></div>
+  </body>
+</html>

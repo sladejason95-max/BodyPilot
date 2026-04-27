@@ -1,0 +1,11 @@
+2026/04/25-12:49:32.344 ad64 Creating DB C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-5177-proxy\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak since it was missing.
+2026/04/25-12:49:32.351 ad64 Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-5177-proxy\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak/MANIFEST-000001
+2026/04/25-12:49:34.577 ad64 Level-0 table #5: started
+2026/04/25-12:49:34.597 ad64 Level-0 table #5: 5083831 bytes OK
+2026/04/25-12:49:34.599 ad64 Delete type=0 #3
+2026/04/25-12:49:41.988 af64 Level-0 table #7: started
+2026/04/25-12:49:42.007 af64 Level-0 table #7: 4176393 bytes OK
+2026/04/25-12:49:42.009 af64 Delete type=0 #4
+2026/04/25-12:50:17.702 ad64 Level-0 table #9: started
+2026/04/25-12:50:17.722 ad64 Level-0 table #9: 4915204 bytes OK
+2026/04/25-12:50:17.724 ad64 Delete type=0 #6

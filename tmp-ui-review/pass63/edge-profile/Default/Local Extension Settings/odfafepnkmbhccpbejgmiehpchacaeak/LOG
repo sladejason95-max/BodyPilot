@@ -1,0 +1,14 @@
+2026/04/26-10:50:06.193 9d70 Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass63\edge-profile\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak since it was missing.
+2026/04/26-10:50:06.202 9d70 Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass63\edge-profile\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak/MANIFEST-000001
+2026/04/26-10:50:07.751 9d70 Level-0 table #5: started
+2026/04/26-10:50:07.766 9d70 Level-0 table #5: 5083568 bytes OK
+2026/04/26-10:50:07.772 9d70 Delete type=0 #3
+2026/04/26-10:50:44.978 a788 Level-0 table #7: started
+2026/04/26-10:50:44.996 a788 Level-0 table #7: 4194626 bytes OK
+2026/04/26-10:50:45.001 a788 Delete type=0 #4
+2026/04/26-10:50:51.324 a788 Level-0 table #9: started
+2026/04/26-10:50:51.341 a788 Level-0 table #9: 4924066 bytes OK
+2026/04/26-10:50:51.346 a788 Delete type=0 #6
+2026/04/26-10:51:51.441 9f48 Level-0 table #11: started
+2026/04/26-10:51:51.483 9f48 Level-0 table #11: 8291000 bytes OK
+2026/04/26-10:51:51.488 9f48 Delete type=0 #8

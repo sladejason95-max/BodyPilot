@@ -1,0 +1,18 @@
+
+> bodypilot@0.0.1 dev
+> vite --host 127.0.0.1 --port 5174
+
+Port 5174 is in use, trying another one...
+
+  [32m[1mVITE[22m v5.4.21[39m  [2mready in [0m[1m369[22m[2m[0m ms[22m
+
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://127.0.0.1:[1m5175[22m/[39m
+[2m4:47:00 p.m.[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/index.css[22m
+[2m4:47:46 p.m.[22m [36m[1m[vite][22m[39m [32mvite.config.ts changed, restarting server...[39m
+[2m4:47:47 p.m.[22m [36m[1m[vite][22m[39m server restarted.
+[2m4:52:21 p.m.[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/index.css[22m
+[2m4:55:06 p.m.[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/index.css[22m
+[2m4:55:12 p.m.[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/index.css[22m
+[2m4:55:33 p.m.[22m [36m[1m[vite][22m[39m [32mhmr update [39m[2m/src/app/App.tsx, /src/index.css[22m
+[2m4:58:38 p.m.[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2mindex.html[22m
+[2m4:58:44 p.m.[22m [36m[1m[vite][22m[39m [32mpage reload [39m[2mpublic/sw.js[22m

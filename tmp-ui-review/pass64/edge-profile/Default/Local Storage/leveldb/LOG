@@ -1,0 +1,5 @@
+2026/04/26-11:11:34.404 bc4c Creating DB C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass64\edge-profile\Default\Local Storage\leveldb since it was missing.
+2026/04/26-11:11:34.459 bc4c Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\tmp-ui-review\pass64\edge-profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/04/26-11:13:34.611 ba7c Level-0 table #5: started
+2026/04/26-11:13:34.618 ba7c Level-0 table #5: 27185 bytes OK
+2026/04/26-11:13:34.623 ba7c Delete type=0 #3

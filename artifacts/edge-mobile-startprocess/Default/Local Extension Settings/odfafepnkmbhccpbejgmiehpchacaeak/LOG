@@ -1,0 +1,11 @@
+2026/04/25-12:49:48.946 957c Creating DB C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-startprocess\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak since it was missing.
+2026/04/25-12:49:48.952 957c Reusing MANIFEST C:\Users\jason\StagePrepGuideApp\artifacts\edge-mobile-startprocess\Default\Local Extension Settings\odfafepnkmbhccpbejgmiehpchacaeak/MANIFEST-000001
+2026/04/25-12:49:50.926 955c Level-0 table #5: started
+2026/04/25-12:49:50.945 955c Level-0 table #5: 5032903 bytes OK
+2026/04/25-12:49:50.947 955c Delete type=0 #3
+2026/04/25-12:50:28.243 955c Level-0 table #7: started
+2026/04/25-12:50:28.261 955c Level-0 table #7: 4227463 bytes OK
+2026/04/25-12:50:28.263 955c Delete type=0 #4
+2026/04/25-12:50:34.141 955c Level-0 table #9: started
+2026/04/25-12:50:34.158 955c Level-0 table #9: 4912996 bytes OK
+2026/04/25-12:50:34.161 955c Delete type=0 #6

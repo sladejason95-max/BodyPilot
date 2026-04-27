@@ -1,0 +1,974 @@
+import type { Compound } from "./types";
+
+type CompoundScienceProfile = {
+  receptorTags: string[];
+  pathwayTags: string[];
+  aromatizes?: boolean;
+  dhtLike?: boolean;
+  progestogenicContext?: boolean;
+  ghIgf1SupportContext?: boolean;
+  insulinSynergy?: boolean;
+  thyroidSynergy?: boolean;
+  digestionLimiter?: boolean;
+  waterRisk?: boolean;
+  rbcRisk?: boolean;
+  cnsStressRisk?: boolean;
+  liverStress?: "none" | "low" | "moderate" | "high";
+  hormoneText: string;
+  interactionText: string;
+  synergyText: string;
+  cautionText: string;
+};
+
+type CompoundCatalogEntry = Compound & {
+  science: CompoundScienceProfile;
+};
+
+export const compoundLibraryCatalog: CompoundCatalogEntry[] = [
+  {
+    id: "test-c",
+    name: "Testosterone Cypionate",
+    category: "Base",
+    enabled: true,
+    dose: 400,
+    unit: "mg/week",
+    fullness: 2,
+    dryness: -1,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Stable injectable testosterone base with moderate fullness and mild water carry.",
+    halfLifeDays: 8,
+    anabolicRating: 100,
+    androgenicRating: 100,
+    schedule: [
+      { id: "test-c-1", day: "Mon", amount: 200 },
+      { id: "test-c-2", day: "Thu", amount: 200 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["aromatase substrate", "5α-reductase substrate", "estradiol support"],
+      aromatizes: true,
+      ghIgf1SupportContext: true,
+      waterRisk: true,
+      hormoneText:
+        "Main aromatizable androgen base. It can feed estradiol through aromatase and DHT through 5α-reduction depending on tissue context.",
+      interactionText:
+        "This is the backbone that the drier DHT-like drugs and the non-aromatizing drugs are being balanced against. If this layer is too low, the whole stack can start reading hormonally under-supported.",
+      synergyText:
+        "Supports fullness, libido, training drive, and usually gives GH a better hormonal environment than an over-suppressed estrogen state.",
+      cautionText:
+        "Too much relative to the rest of the stack can increase water / estrogen pressure. Too little can make the stack flatter, drier, and harder to stabilize hormonally.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "test-e",
+    name: "Testosterone Enanthate",
+    category: "Base",
+    enabled: true,
+    dose: 400,
+    unit: "mg/week",
+    fullness: 2,
+    dryness: -1,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Very similar to cypionate; common long-ester testosterone base.",
+    halfLifeDays: 7,
+    anabolicRating: 100,
+    androgenicRating: 100,
+    schedule: [
+      { id: "test-e-1", day: "Mon", amount: 200 },
+      { id: "test-e-2", day: "Thu", amount: 200 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["aromatase substrate", "5α-reductase substrate", "estradiol support"],
+      aromatizes: true,
+      ghIgf1SupportContext: true,
+      waterRisk: true,
+      hormoneText:
+        "Main aromatizable androgen base. It feeds estradiol support and keeps the stack from becoming purely dry-androgen driven.",
+      interactionText:
+        "Long-ester test is often the reference layer the rest of the stack is being judged against, especially DHT-like compounds and 19-nors.",
+      synergyText:
+        "Supports fullness, performance, libido, and a better GH-supportive hormonal environment.",
+      cautionText:
+        "Too much can soften the look through water / estrogen pressure. Too little can make the stack flatter and harder to stabilize.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "test-p",
+    name: "Testosterone Propionate",
+    category: "Base",
+    enabled: true,
+    dose: 300,
+    unit: "mg/week",
+    fullness: 1,
+    dryness: 0,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Short-ester test with tighter control and more frequent injections.",
+    halfLifeDays: 2,
+    anabolicRating: 100,
+    androgenicRating: 100,
+    schedule: [
+      { id: "test-p-1", day: "Mon", amount: 100 },
+      { id: "test-p-2", day: "Wed", amount: 100 },
+      { id: "test-p-3", day: "Fri", amount: 100 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["aromatase substrate", "5α-reductase substrate", "estradiol support", "short-ester control"],
+      aromatizes: true,
+      ghIgf1SupportContext: true,
+      waterRisk: true,
+      hormoneText:
+        "Still the main aromatizable androgen base, just with faster control and a shorter exposure curve.",
+      interactionText:
+        "Because the ester is shorter, dose adjustments change the hormone environment faster. That makes it easier to clean up a prep stack, but also easier to create instability if scheduling is sloppy.",
+      synergyText:
+        "Useful when you want the testosterone / estradiol backbone but tighter cosmetic control.",
+      cautionText:
+        "Short-ester control only helps if injection frequency is consistent. Otherwise the stack becomes noisier instead of cleaner.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "sus",
+    name: "Sustanon 250",
+    category: "Base",
+    enabled: true,
+    dose: 500,
+    unit: "mg/week",
+    fullness: 2,
+    dryness: -1,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Mixed-ester testosterone blend used as a general mass or prep base.",
+    halfLifeDays: 7,
+    anabolicRating: 100,
+    androgenicRating: 100,
+    schedule: [
+      { id: "sus-1", day: "Mon", amount: 250 },
+      { id: "sus-2", day: "Thu", amount: 250 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["aromatase substrate", "5α-reductase substrate", "mixed-esters", "estradiol support"],
+      aromatizes: true,
+      ghIgf1SupportContext: true,
+      waterRisk: true,
+      hormoneText:
+        "This is still testosterone biology, but the mixed ester pattern changes how smooth or noisy exposure feels depending on dosing style.",
+      interactionText:
+        "It is still the main estrogen-supporting backbone, but the blend profile can make the stack feel less flat than a badly managed short ester and less precise than a very clean long-ester setup.",
+      synergyText:
+        "Useful as a general-purpose testosterone backbone when you want broad support and are not trying to micromanage the ester curve.",
+      cautionText:
+        "The blend can create the illusion of precision while still needing disciplined dosing. It is still testosterone, so the same water / estrogen tradeoffs remain.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "mast-e",
+    name: "Masteron Enanthate",
+    category: "Performance",
+    enabled: true,
+    dose: 400,
+    unit: "mg/week",
+    fullness: 0,
+    dryness: 5,
+    performance: 1,
+    recovery: 0,
+    stress: 1,
+    digestion: 0,
+    note: "Hardening/cosmetic agent with dryness bias and low water carry.",
+    halfLifeDays: 7.5,
+    anabolicRating: 62,
+    androgenicRating: 25,
+    schedule: [
+      { id: "mast-e-1", day: "Mon", amount: 200 },
+      { id: "mast-e-2", day: "Thu", amount: 200 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["DHT-like", "non-aromatizing", "esthetic hardening"],
+      dhtLike: true,
+      hormoneText:
+        "Acts more like a dry androgenic pressure tool than an estrogen-supporting base. It does not add aromatizable substrate.",
+      interactionText:
+        "This usually makes sense relative to the testosterone / estradiol layer. It does not replace estrogen support; it changes the look and feel against it.",
+      synergyText:
+        "Useful when you want hardness, cleaner look quality, and a stronger androgenic feel without adding more aromatization.",
+      cautionText:
+        "If this dominates while estrogen pressure is already low, the stack can start reading flat, dry, or hormonally under-supported for fullness and libido.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "mast-p",
+    name: "Masteron Propionate",
+    category: "Performance",
+    enabled: true,
+    dose: 350,
+    unit: "mg/week",
+    fullness: 0,
+    dryness: 5,
+    performance: 1,
+    recovery: 0,
+    stress: 1,
+    digestion: 0,
+    note: "Short-ester masteron for tighter cosmetic control and frequent dosing.",
+    halfLifeDays: 2,
+    anabolicRating: 62,
+    androgenicRating: 25,
+    schedule: [
+      { id: "mast-p-1", day: "Mon", amount: 120 },
+      { id: "mast-p-2", day: "Wed", amount: 110 },
+      { id: "mast-p-3", day: "Fri", amount: 120 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["DHT-like", "non-aromatizing", "short-ester control", "esthetic hardening"],
+      dhtLike: true,
+      hormoneText:
+        "Short-ester version of the same dry DHT-like pressure. It does not support estrogen and tends to bias the stack toward a harder read.",
+      interactionText:
+        "The shorter ester gives more cosmetic control, but it still needs a functional testosterone / estradiol layer underneath if the stack is going to feel stable.",
+      synergyText:
+        "Useful late in prep when you want faster control over the hardness layer.",
+      cautionText:
+        "Short-ester convenience is only real if injection frequency is disciplined. Otherwise the stack gets noisier instead of sharper.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "tren-e",
+    name: "Trenbolone Enanthate",
+    category: "Performance",
+    enabled: true,
+    dose: 200,
+    unit: "mg/week",
+    fullness: -1,
+    dryness: 4,
+    performance: 3,
+    recovery: 1,
+    stress: 4,
+    digestion: -2,
+    note: "Very high-output compound with strong stress and digestion downside risk.",
+    halfLifeDays: 10.5,
+    anabolicRating: 500,
+    androgenicRating: 500,
+    schedule: [
+      { id: "tren-e-1", day: "Tue", amount: 100 },
+      { id: "tren-e-2", day: "Fri", amount: 100 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["19-nor", "progestogenic context", "non-aromatizing", "high CNS load"],
+      progestogenicContext: true,
+      cnsStressRisk: true,
+      hormoneText:
+        "Tren does not aromatize, but it changes the hormone environment very aggressively. It pushes androgenic and performance output high without contributing estradiol substrate.",
+      interactionText:
+        "In a stack with testosterone, estrogen problems are not just absolute estradiol problems anymore. Tren adds a progestogenic-context problem on top of the estrogen-androgen balance problem.",
+      synergyText:
+        "Strong for drive, body-composition shift, and hardening when the rest of the stack, food, and recovery are actually controlled.",
+      cautionText:
+        "Raises total stress cost fast. Combined with stimulants, thyroid, poor sleep, or hard prep dieting, it can distort the whole read of recovery, digestion, and look stability.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "tren-a",
+    name: "Trenbolone Acetate",
+    category: "Performance",
+    enabled: true,
+    dose: 280,
+    unit: "mg/week",
+    fullness: -1,
+    dryness: 4,
+    performance: 3,
+    recovery: 1,
+    stress: 4,
+    digestion: -2,
+    note: "Short-ester tren with faster onset and easier dose control, still high stress.",
+    halfLifeDays: 1,
+    anabolicRating: 500,
+    androgenicRating: 500,
+    schedule: [
+      { id: "tren-a-1", day: "Mon", amount: 100 },
+      { id: "tren-a-2", day: "Wed", amount: 90 },
+      { id: "tren-a-3", day: "Fri", amount: 90 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["19-nor", "progestogenic context", "non-aromatizing", "short-ester control", "high CNS load"],
+      progestogenicContext: true,
+      cnsStressRisk: true,
+      hormoneText:
+        "Same aggressive tren biology, just with faster control and faster signal-to-noise changes.",
+      interactionText:
+        "Lets you move the progestogenic / stress layer faster, but it also makes overreaction easier if the rest of the stack is not stable.",
+      synergyText:
+        "Useful when you need finer control over tren exposure in prep.",
+      cautionText:
+        "Fast feedback does not remove the biology. It just shortens the time between the mistake and seeing it.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "npp",
+    name: "NPP",
+    category: "Performance",
+    enabled: true,
+    dose: 300,
+    unit: "mg/week",
+    fullness: 2,
+    dryness: -1,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Short nandrolone with joint support/fullness bias and some water carry.",
+    halfLifeDays: 3,
+    anabolicRating: 125,
+    androgenicRating: 37,
+    schedule: [
+      { id: "npp-1", day: "Mon", amount: 100 },
+      { id: "npp-2", day: "Wed", amount: 100 },
+      { id: "npp-3", day: "Fri", amount: 100 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["19-nor", "progestogenic context", "joint/fullness bias", "short-ester control"],
+      progestogenicContext: true,
+      hormoneText:
+        "Nandrolone-family compounds add a softer, fuller, more joint-friendly signal than the drier DHT-like compounds.",
+      interactionText:
+        "With testosterone in the stack, softness / libido / breast-tissue interpretation is not just high estrogen or low estrogen; the 19-nor layer matters too.",
+      synergyText:
+        "Can improve fullness, training comfort, and recovery feel when the goal is not ultra-dry stage hardness.",
+      cautionText:
+        "When combined with already-softening inputs or when the stack needs to stay very crisp, this can work against the cosmetic end-point even if performance is good.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "deca",
+    name: "Deca Durabolin",
+    category: "Performance",
+    enabled: true,
+    dose: 300,
+    unit: "mg/week",
+    fullness: 2,
+    dryness: -2,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: 0,
+    note: "Long nandrolone with fullness/joint support and softer cosmetic look.",
+    halfLifeDays: 10,
+    anabolicRating: 125,
+    androgenicRating: 37,
+    schedule: [
+      { id: "deca-1", day: "Mon", amount: 150 },
+      { id: "deca-2", day: "Thu", amount: 150 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["19-nor", "progestogenic context", "joint/fullness bias", "long-ester"],
+      progestogenicContext: true,
+      hormoneText:
+        "Long-acting nandrolone adds fullness and joint comfort more than it adds a stage-hard look.",
+      interactionText:
+        "Its long ester makes the softness/fullness tradeoff slower to reverse. It should be viewed as a strategic environment choice, not just a single compound add-on.",
+      synergyText:
+        "Useful when recovery feel and joint comfort matter more than razor-dry cosmetics.",
+      cautionText:
+        "The longer half-life means cosmetic mistakes unwind slowly. Not ideal when you need fast visual correction.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "eq",
+    name: "Equipoise",
+    category: "Performance",
+    enabled: true,
+    dose: 500,
+    unit: "mg/week",
+    fullness: 1,
+    dryness: 1,
+    performance: 2,
+    recovery: 1,
+    stress: 1,
+    digestion: 0,
+    note: "Long-acting boldenone with appetite/performance support and mild dryness bias.",
+    halfLifeDays: 14,
+    anabolicRating: 100,
+    androgenicRating: 50,
+    schedule: [
+      { id: "eq-1", day: "Mon", amount: 250 },
+      { id: "eq-2", day: "Thu", amount: 250 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["mild aromatizable context", "RBC pressure", "appetite / work capacity", "long-ester"],
+      rbcRisk: true,
+      hormoneText:
+        "Usually used as a lower-water-feeling androgenic support tool than plain testosterone, but it still changes estrogenic and hematology context.",
+      interactionText:
+        "It can make the stack feel more performance-biased and steadier, but it should be interpreted alongside appetite, RBC pressure, and the real estrogen support being supplied elsewhere.",
+      synergyText:
+        "Can support appetite, work capacity, and a drier-performance read when the rest of the stack is not over-softening the look.",
+      cautionText:
+        "Because it is long-acting, mistakes read slowly and are slow to unwind. Hematology pressure can make the real-world result diverge from the theoretical one.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "primo-e",
+    name: "Primobolan Enanthate",
+    category: "Performance",
+    enabled: true,
+    dose: 500,
+    unit: "mg/week",
+    fullness: 0,
+    dryness: 2,
+    performance: 1,
+    recovery: 1,
+    stress: 1,
+    digestion: 0,
+    note: "Very common prep injectable with low aromatization and clean look bias.",
+    halfLifeDays: 10,
+    anabolicRating: 88,
+    androgenicRating: 44,
+    schedule: [
+      { id: "primo-e-1", day: "Mon", amount: 250 },
+      { id: "primo-e-2", day: "Thu", amount: 250 },
+    ],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["DHT-like", "non-aromatizing", "clean prep bias", "long-ester"],
+      dhtLike: true,
+      hormoneText:
+        "Primo tends to be interpreted as a cleaner, less noisy dry-support androgen rather than an estrogen-supporting base.",
+      interactionText:
+        "It layers well when the stack already has a stable aromatizable base. It does not fix an under-supported hormone environment by itself.",
+      synergyText:
+        "Useful when you want prep-friendly androgen support with a cleaner look profile than wetter compounds.",
+      cautionText:
+        "Like other dry-support compounds, it can contribute to a stack that is technically hard but under-supported if test / estrogen are too suppressed.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "anavar",
+    name: "Anavar",
+    category: "Orals",
+    enabled: true,
+    dose: 40,
+    unit: "mg/day",
+    fullness: 0,
+    dryness: 2,
+    performance: 1,
+    recovery: 0,
+    stress: 1,
+    digestion: 0,
+    note: "Dry, mild oral often used late in prep for polish/performance.",
+    halfLifeDays: 0.5,
+    anabolicRating: 322,
+    androgenicRating: 24,
+    schedule: [{ id: "anavar-1", day: "Daily", amount: 40 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "dry performance bias", "non-aromatizing"],
+      dhtLike: true,
+      liverStress: "moderate",
+      hormoneText:
+        "Adds a harder, drier, more performance-biased signal without contributing estrogen support.",
+      interactionText:
+        "Usually looks best when the estrogen and fullness layer underneath it is already correct rather than when it is being used to fix a soft or flat base.",
+      synergyText:
+        "Useful for late-prep polish and modest performance support without another injectable variable.",
+      cautionText:
+        "Still adds oral burden. Once you start stacking dry orals on top of already dry injectables, the stack can get too cosmetically 'clean' for its own good.",
+    },
+  },
+  {
+    id: "winstrol",
+    name: "Winstrol",
+    category: "Orals",
+    enabled: true,
+    dose: 30,
+    unit: "mg/day",
+    fullness: -1,
+    dryness: 3,
+    performance: 1,
+    recovery: 0,
+    stress: 2,
+    digestion: 0,
+    note: "Very dry oral with hardening bias and higher connective tissue downside risk.",
+    halfLifeDays: 0.4,
+    anabolicRating: 320,
+    androgenicRating: 30,
+    schedule: [{ id: "winstrol-1", day: "Daily", amount: 30 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "very dry cosmetic bias", "non-aromatizing"],
+      dhtLike: true,
+      liverStress: "moderate",
+      hormoneText:
+        "Very dry oral signal that pushes the stack toward hardness more than fullness.",
+      interactionText:
+        "Usually works as polish on top of a correctly built base rather than as a rescue drug for a poor hormone environment.",
+      synergyText:
+        "Useful when the goal is hardening and dryness late in prep.",
+      cautionText:
+        "Can make connective tissue / dryness issues feel worse when the rest of the stack is already dry and stressful.",
+    },
+  },
+  {
+    id: "anadrol",
+    name: "Anadrol",
+    category: "Orals",
+    enabled: true,
+    dose: 50,
+    unit: "mg/day",
+    fullness: 4,
+    dryness: -3,
+    performance: 3,
+    recovery: 1,
+    stress: 2,
+    digestion: -1,
+    note: "Very aggressive oral for fullness and strength with obvious water/pressure downside.",
+    halfLifeDays: 0.4,
+    anabolicRating: 320,
+    androgenicRating: 45,
+    schedule: [{ id: "anadrol-1", day: "Daily", amount: 50 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "wet/fullness-biased", "pressure / spill risk"],
+      waterRisk: true,
+      liverStress: "high",
+      hormoneText:
+        "Adds fast fullness and performance pressure more than hormonal cleanliness. It can make the stack look bigger and stronger before it looks cleaner.",
+      interactionText:
+        "Layers on top of testosterone / insulin / GH very differently than dry orals do. It can make fullness read better while also increasing spill risk.",
+      synergyText:
+        "Useful when you want aggressive gym performance and visible fullness fast.",
+      cautionText:
+        "If the current stack is already pushing insulin, GH, water, or food aggressively, Anadrol can amplify the wrong visual signal quickly.",
+    },
+  },
+  {
+    id: "dbol",
+    name: "Dianabol",
+    category: "Orals",
+    enabled: true,
+    dose: 30,
+    unit: "mg/day",
+    fullness: 4,
+    dryness: -3,
+    performance: 3,
+    recovery: 1,
+    stress: 2,
+    digestion: -1,
+    note: "Classic mass oral with strong fullness/strength and softer look bias.",
+    halfLifeDays: 0.25,
+    anabolicRating: 90,
+    androgenicRating: 40,
+    schedule: [{ id: "dbol-1", day: "Daily", amount: 30 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "wet/fullness-biased", "aromatizable softening context"],
+      aromatizes: true,
+      waterRisk: true,
+      liverStress: "moderate",
+      hormoneText:
+        "Classic wet oral signal that pushes fullness, strength, and softness more than dryness or hormonal cleanliness.",
+      interactionText:
+        "Stacks strongly with insulin / GH / high-carb setups. That can be productive or messy depending on how controlled the rest of the environment is.",
+      synergyText:
+        "Useful when the goal is quick fullness and performance rather than stage-sharpness.",
+      cautionText:
+        "Can move the look away from clean prep condition fast if the stack is already near its spill threshold.",
+    },
+  },
+  {
+    id: "tbol",
+    name: "Turinabol",
+    category: "Orals",
+    enabled: true,
+    dose: 40,
+    unit: "mg/day",
+    fullness: 1,
+    dryness: 1,
+    performance: 2,
+    recovery: 0,
+    stress: 1,
+    digestion: 0,
+    note: "Cleaner oral performance option with less water than dbol/anadrol.",
+    halfLifeDays: 0.7,
+    anabolicRating: 54,
+    androgenicRating: 6,
+    schedule: [{ id: "tbol-1", day: "Daily", amount: 40 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "cleaner performance bias", "lower water"],
+      liverStress: "moderate",
+      hormoneText:
+        "Cleaner oral performance option than Dbol or Anadrol, usually without the same wet cosmetic drift.",
+      interactionText:
+        "Less dramatic than the bigger orals, so it tends to fit best when the stack already has its main hormone architecture solved.",
+      synergyText:
+        "Useful for modest performance support without pushing the stack hard toward spill.",
+      cautionText:
+        "Still part of the oral burden equation even when it looks cleaner than the more aggressive options.",
+    },
+  },
+  {
+    id: "superdrol",
+    name: "Superdrol",
+    category: "Orals",
+    enabled: true,
+    dose: 15,
+    unit: "mg/day",
+    fullness: 2,
+    dryness: 1,
+    performance: 3,
+    recovery: 0,
+    stress: 3,
+    digestion: -1,
+    note: "Very potent oral with strong performance/fullness and very high stress cost.",
+    halfLifeDays: 0.3,
+    anabolicRating: 400,
+    androgenicRating: 20,
+    schedule: [{ id: "superdrol-1", day: "Daily", amount: 15 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "potent performance/fullness bias", "high systemic burden"],
+      liverStress: "high",
+      cnsStressRisk: true,
+      hormoneText:
+        "Adds a very strong performance / fullness signal without giving you the hormonal support of an aromatizable base.",
+      interactionText:
+        "Often interacts more like a force multiplier on the existing stack than a foundation layer of its own.",
+      synergyText:
+        "Useful when you want a hard push in performance and visible fullness from a small dose window.",
+      cautionText:
+        "Very high stress cost. Easy to overestimate the benefit because the short-term gym feedback is louder than the total burden.",
+    },
+  },
+  {
+    id: "halo",
+    name: "Halotestin",
+    category: "Orals",
+    enabled: true,
+    dose: 20,
+    unit: "mg/day",
+    fullness: 0,
+    dryness: 2,
+    performance: 3,
+    recovery: 0,
+    stress: 3,
+    digestion: 0,
+    note: "Very high-aggression strength oral more for performance than hypertrophy.",
+    halfLifeDays: 0.4,
+    anabolicRating: 1900,
+    androgenicRating: 850,
+    schedule: [{ id: "halo-1", day: "Daily", amount: 20 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["oral AAS", "aggression / neural drive", "dry performance bias"],
+      liverStress: "high",
+      cnsStressRisk: true,
+      hormoneText:
+        "This is more of a high-aggression performance and neural-drive drug than a true mass or fullness builder.",
+      interactionText:
+        "It interacts strongly with the stress side of the stack rather than fixing the main hormone architecture.",
+      synergyText:
+        "Useful when the goal is performance expression, not tissue gain.",
+      cautionText:
+        "Easy to let the neural/performance read fool you into thinking the whole stack is better supported than it actually is.",
+    },
+  },
+  {
+    id: "hgh",
+    name: "HGH",
+    category: "Ancillary",
+    enabled: true,
+    dose: 4,
+    unit: "IU/day",
+    fullness: 1,
+    dryness: -1,
+    performance: 1,
+    recovery: 2,
+    stress: 0,
+    digestion: -1,
+    note: "Recovery/body comp support with possible water retention and digestion/appetite effects.",
+    halfLifeDays: 0.15,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "hgh-1", day: "Daily", amount: 4 }],
+    science: {
+      receptorTags: ["GH receptor"],
+      pathwayTags: ["IGF-1 axis", "insulin-antagonistic tendency", "water / connective tissue context"],
+      ghIgf1SupportContext: true,
+      insulinSynergy: true,
+      waterRisk: true,
+      digestionLimiter: true,
+      hormoneText:
+        "GH pushes through the GH receptor and downstream IGF-1 signaling. In a bodybuilder stack, the read depends heavily on food, insulin context, and not driving estrogen support too low.",
+      interactionText:
+        "GH does not exist in isolation. If the stack is too dry, too underfed, too insulin-resistant, or hormonally too flattened, GH can stop reading like a clean growth / recovery signal and start reading like blur, water, or digestive drag.",
+      synergyText:
+        "Works best when food flow, training stimulus, and the broader hormone environment are supportive. It often pairs most obviously with insulin-supported fullness and a non-crashed estrogen environment.",
+      cautionText:
+        "If the stack is already driving water, digestion slowdown, or a flatter low-estrogen look, GH may amplify the wrong visual signal instead of the right one.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "insulin",
+    name: "Humalog",
+    category: "Ancillary",
+    enabled: true,
+    dose: 10,
+    unit: "IU/training day",
+    fullness: 3,
+    dryness: -2,
+    performance: 2,
+    recovery: 2,
+    stress: 1,
+    digestion: -1,
+    note: "Powerful nutrient partitioning/fullness support with obvious spill/hypo risk if misused.",
+    halfLifeDays: 0.04,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "insulin-1", day: "Training", amount: 10 }],
+    science: {
+      receptorTags: ["insulin receptor"],
+      pathwayTags: ["nutrient partitioning", "glycogen / cell volume", "spill risk"],
+      insulinSynergy: true,
+      waterRisk: true,
+      digestionLimiter: true,
+      hormoneText:
+        "Insulin is not an androgen variable. It changes nutrient partitioning, glycogen storage, cell volume, and how the rest of the stack is visually expressed.",
+      interactionText:
+        "This is one of the biggest interaction multipliers in the stack because it changes what carbs, GH, and wet compounds actually look like in tissue.",
+      synergyText:
+        "Can make fullness, training performance, and the GH-supportive environment read much stronger when food timing and total intake are correct.",
+      cautionText:
+        "If carbs, digestion, or the rest of the stack are already pushing spill, insulin multiplies the cosmetic downside fast instead of giving you cleaner fullness.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "clen",
+    name: "Clenbuterol",
+    category: "Ancillary",
+    enabled: true,
+    dose: 40,
+    unit: "mcg/day",
+    fullness: -1,
+    dryness: 1,
+    performance: 1,
+    recovery: -1,
+    stress: 3,
+    digestion: 0,
+    note: "Fat-loss stimulant with dryness bias but notable stress/recovery downside.",
+    halfLifeDays: 1.5,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "clen-1", day: "Daily", amount: 40 }],
+    science: {
+      receptorTags: ["beta-adrenergic signaling"],
+      pathwayTags: ["fat-loss support", "sympathetic drive", "recovery drag", "stress amplifier"],
+      cnsStressRisk: true,
+      hormoneText:
+        "This is an output-raising, recovery-taxing tool rather than a direct anabolic or estrogen-supporting one.",
+      interactionText:
+        "It interacts with the whole stack by changing recovery margin, sympathetic pressure, and how well you tolerate hard training plus hard dieting.",
+      synergyText:
+        "Useful when the goal is accelerating fat loss without needing another androgen variable.",
+      cautionText:
+        "When combined with already-stressful drugs or poor sleep, it can make the stack look worse even if fat-loss pace improves on paper.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "t3",
+    name: "T3",
+    category: "Ancillary",
+    enabled: true,
+    dose: 25,
+    unit: "mcg/day",
+    fullness: -1,
+    dryness: 1,
+    performance: 0,
+    recovery: -1,
+    stress: 2,
+    digestion: 0,
+    note: "Thyroid-based fat-loss support that can improve pace but reduce recovery margin.",
+    halfLifeDays: 1,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "t3-1", day: "Daily", amount: 25 }],
+    science: {
+      receptorTags: ["thyroid receptor"],
+      pathwayTags: ["fat-loss support", "thyroid drive", "recovery drag", "metabolic acceleration"],
+      thyroidSynergy: true,
+      cnsStressRisk: true,
+      hormoneText:
+        "This changes metabolic pace and recovery cost more than it changes the core sex-hormone architecture.",
+      interactionText:
+        "It interacts with the stack by changing how recoverable the training and diet plan actually are, not by solving fullness or estrogen balance.",
+      synergyText:
+        "Useful when the goal is accelerating fat-loss pace without adding another androgen variable.",
+      cautionText:
+        "Combined with hard dieting, stimulants, and high-stress compounds, it can quietly become the variable that makes the whole stack less supportable.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "retatrutide",
+    name: "Retatrutide",
+    category: "Ancillary",
+    enabled: true,
+    dose: 2,
+    unit: "mg/week",
+    fullness: -1,
+    dryness: 1,
+    performance: 0,
+    recovery: 0,
+    stress: 0,
+    digestion: -3,
+    note: "Very strong appetite/fat-loss support with major digestion/appetite-management impact.",
+    halfLifeDays: 6,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "retatrutide-1", day: "Mon", amount: 2 }],
+    science: {
+      receptorTags: ["GLP-1 receptor", "GIP receptor", "glucagon receptor"],
+      pathwayTags: ["appetite suppression", "slower gastric emptying", "food-throughput limiter"],
+      digestionLimiter: true,
+      hormoneText:
+        "Not an androgenic driver. Its main effect in this app is through appetite control, gastric emptying, digestion, and how much food you can actually move through the system.",
+      interactionText:
+        "It can completely change what the rest of the stack looks like because it can cap food throughput, flatten peri-workout nutrition, and reduce how well insulin / GH / carb support express themselves.",
+      synergyText:
+        "Very useful when fat-loss pacing and hunger control matter more than maximal food throughput.",
+      cautionText:
+        "If digestion is already fragile, this can become the variable that makes the whole stack look worse by choking the food flow the rest of the drugs are relying on.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "tirzepatide",
+    name: "Tirzepatide",
+    category: "Ancillary",
+    enabled: true,
+    dose: 2.5,
+    unit: "mg/week",
+    fullness: -1,
+    dryness: 0,
+    performance: 0,
+    recovery: 0,
+    stress: 0,
+    digestion: -3,
+    note: "Appetite control/fat-loss support with notable gastric emptying slowdown.",
+    halfLifeDays: 5,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "tirzepatide-1", day: "Mon", amount: 2.5 }],
+    science: {
+      receptorTags: ["GLP-1 receptor", "GIP receptor"],
+      pathwayTags: ["appetite suppression", "slower gastric emptying", "food-throughput limiter"],
+      digestionLimiter: true,
+      hormoneText:
+        "Not an androgenic driver. Main effect is through appetite control, gastric emptying, digestion, and food throughput.",
+      interactionText:
+        "It can change what the rest of the stack looks like by limiting how much peri-workout nutrition and total food you can actually process.",
+      synergyText:
+        "Useful when fat-loss pace and appetite control matter more than maximal food flow.",
+      cautionText:
+        "If the rest of the stack is relying on food-driven fullness, recovery, or GH / insulin support, this can become a hidden conflict variable.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "cialis",
+    name: "Cialis",
+    category: "Ancillary",
+    enabled: true,
+    dose: 5,
+    unit: "mg/day",
+    fullness: 1,
+    dryness: 0,
+    performance: 1,
+    recovery: 0,
+    stress: 0,
+    digestion: 0,
+    note: "Pump/perfusion support commonly used for training and cosmetic fullness.",
+    halfLifeDays: 0.7,
+    anabolicRating: 0,
+    androgenicRating: 0,
+    schedule: [{ id: "cialis-1", day: "Daily", amount: 5 }],
+    science: {
+      receptorTags: ["PDE5 inhibition"],
+      pathwayTags: ["blood flow / perfusion", "pump support", "non-hormonal"],
+      hormoneText:
+        "This is not moving the core anabolic-estrogen-progestin balance. It changes perfusion, pump, and how full tissue reads acutely.",
+      interactionText:
+        "It interacts more with training, carbs, and fullness than with the classic hormone-management layer.",
+      synergyText:
+        "Can improve training feel, pump quality, and the cosmetic fullness read without adding another androgen variable.",
+      cautionText:
+        "Useful support tool, but it should not be mistaken for actual hormonal support when the stack is underbuilt elsewhere.",
+      liverStress: "none",
+    },
+  },
+  {
+    id: "proviron",
+    name: "Proviron",
+    category: "Ancillary",
+    enabled: true,
+    dose: 50,
+    unit: "mg/day",
+    fullness: 0,
+    dryness: 1,
+    performance: 0,
+    recovery: 0,
+    stress: 1,
+    digestion: 0,
+    note: "Androgenic ancillary often used for feel/libido and a slightly drier cosmetic look.",
+    halfLifeDays: 0.5,
+    anabolicRating: 30,
+    androgenicRating: 150,
+    schedule: [{ id: "proviron-1", day: "Daily", amount: 50 }],
+    science: {
+      receptorTags: ["AR agonist"],
+      pathwayTags: ["DHT-like", "SHBG interaction context", "non-aromatizing", "feel/libido support"],
+      dhtLike: true,
+      hormoneText:
+        "Acts more like a dry androgenic support variable than a true anabolic or estrogen-supporting base.",
+      interactionText:
+        "Usually interpreted through how it changes feel, libido, dryness, and free-androgen presentation inside the broader stack.",
+      synergyText:
+        "Useful when the stack needs a bit more androgenic feel or dryness without adding another big anabolic variable.",
+      cautionText:
+        "Can make an already dry, under-supported stack feel even more one-directional if estrogen support is already too low.",
+      liverStress: "low",
+    },
+  },
+];
