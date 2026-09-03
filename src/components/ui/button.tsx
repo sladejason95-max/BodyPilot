@@ -28,10 +28,10 @@ export function Button({
   };
 
   const sizeClasses = {
-    default: "h-10 px-4 py-2 text-sm",
-    sm: "h-8 px-3 text-xs",
-    lg: "h-11 px-5 text-sm",
-    icon: "h-10 w-10",
+    default: "min-h-11 px-4 py-2 text-sm sm:h-10 sm:min-h-10",
+    sm: "min-h-10 px-3 py-2 text-xs sm:h-8 sm:min-h-8",
+    lg: "min-h-12 px-5 py-2.5 text-sm sm:h-11 sm:min-h-11",
+    icon: "min-h-11 min-w-11 px-0 sm:h-10 sm:w-10 sm:min-h-10 sm:min-w-10",
   };
 
   return (

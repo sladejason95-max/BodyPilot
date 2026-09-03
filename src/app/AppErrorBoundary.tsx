@@ -23,8 +23,22 @@ export default class AppErrorBoundary extends React.Component<React.PropsWithChi
     };
   }
 
-  componentDidCatch(_error: Error, _info: React.ErrorInfo) {
-    // A production adapter can send this event to telemetry without changing the recovery UI.
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    const payload = {
+      id: this.state.errorId,
+      message: error.message,
+      stack: error.stack,
+      componentStack: info.componentStack,
+      occurredAt: new Date().toISOString(),
+    };
+
+    console.error("BodyPilot recovered from a render error", payload);
+
+    try {
+      window.localStorage.setItem("bodypilot:last-render-error", JSON.stringify(payload));
+    } catch {
+      // Recovery UI should still render if storage is unavailable.
+    }
   }
 
   render() {
@@ -50,7 +64,7 @@ export default class AppErrorBoundary extends React.Component<React.PropsWithChi
               <div>
                 <div className="text-lg font-black tracking-normal">BodyPilot recovered the workspace.</div>
                 <div className="mt-1 text-sm leading-6 text-slate-600 dark:text-slate-300">
-                  Your saved data stays intact. Reload the app to restore the active view.
+                  Your saved plan stays intact. Reload the app to restore the active view.
                 </div>
               </div>
             </div>
@@ -63,7 +77,7 @@ export default class AppErrorBoundary extends React.Component<React.PropsWithChi
             </div>
             <div>
               <div className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500 dark:text-slate-400">Data status</div>
-              <div className="mt-1 font-semibold text-slate-900 dark:text-slate-100">Saved locally</div>
+              <div className="mt-1 font-semibold text-slate-900 dark:text-slate-100">Plan saved locally</div>
             </div>
           </div>
 

@@ -1,8 +1,8 @@
 export const BODY_PILOT_BRAND = {
   name: "BodyPilot",
   shortName: "BP",
-  tagline: "Precision coaching for daily execution.",
-  productLine: "BodyPilot OS",
+  tagline: "AI hypertrophy planning.",
+  productLine: "BodyPilot Hypertrophy",
 } as const;
 
 type BodyPilotLogoProps = {

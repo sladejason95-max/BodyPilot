@@ -11,3 +11,9 @@ pnpm-debug.log*
 *.log
 artifacts
 tmp-ui-review
+tmp-chrome-*/
+.ios-build-env
+.ios-automation-env
+build-output.log
+
+.vercel

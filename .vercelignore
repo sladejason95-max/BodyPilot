@@ -7,3 +7,11 @@ dist
 *.log
 artifacts
 tmp-ui-review
+tmp-chrome-*/
+docs
+ios
+scripts
+*.md
+ios-app-config.json
+codex-build-config.yaml
+capacitor.config.json

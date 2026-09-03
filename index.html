@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-title" content="BodyPilot" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="application-name" content="BodyPilot" />
-    <meta name="description" content="BodyPilot is a premium mobile coaching system for food, training, scheduling, check-ins, and daily execution." />
+    <meta name="description" content="BodyPilot is a premium AI fitness planner for macros, training splits, readiness, and daily execution." />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/app-icon.svg" />
     <link rel="apple-touch-icon" href="/app-icon.svg" />
@@ -159,10 +159,13 @@
       (function () {
         try {
           document.body && document.body.setAttribute("data-app-ready", "false");
-          var saved = window.localStorage.getItem("bodypilot-v1") || window.localStorage.getItem("stage-prep-elite-v2");
+          var saved =
+            window.localStorage.getItem("bodypilot-ai-v2") ||
+            window.localStorage.getItem("bodypilot-v1") ||
+            window.localStorage.getItem("stage-prep-elite-v2");
           if (!saved) return;
           var parsed = JSON.parse(saved);
-          if (parsed && parsed.appTheme === "dark") {
+          if (parsed && (parsed.theme === "dark" || parsed.appTheme === "dark")) {
             document.documentElement.classList.add("dark");
             document.documentElement.style.colorScheme = "dark";
           } else {
@@ -183,7 +186,7 @@
           <img src="/app-icon.svg" alt="" />
         </div>
         <h1 class="boot-title">Loading BodyPilot</h1>
-        <p class="boot-copy">Setting up your workspace.</p>
+        <p class="boot-copy">Building your plan.</p>
         <div class="boot-bar"><span></span></div>
       </div>
     </div>

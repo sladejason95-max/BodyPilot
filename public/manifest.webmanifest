@@ -1,7 +1,7 @@
 {
   "name": "BodyPilot",
   "short_name": "BodyPilot",
-  "description": "BodyPilot is a premium mobile coaching system for food, training, check-ins, reminders, and daily execution.",
+  "description": "BodyPilot is a premium AI fitness planner for macros, training splits, readiness, and daily execution.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
@@ -23,15 +23,15 @@
     {
       "name": "Log food",
       "short_name": "Food",
-      "description": "Open BodyPilot food logging.",
-      "url": "/#nutrition",
+      "description": "Open BodyPilot macro planning.",
+      "url": "/#food",
       "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
     },
     {
       "name": "Start today",
       "short_name": "Today",
       "description": "Open today's BodyPilot execution view.",
-      "url": "/#tracker",
+      "url": "/#today",
       "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml" }]
     }
   ]
