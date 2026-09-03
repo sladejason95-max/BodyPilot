@@ -1,4 +1,5 @@
 import { normalizeOpenFoodFactsProduct } from "./food_engine";
+import { prepareFoodProviderProduct } from "./food_provider_quality";
 import type { FoodCatalogItem } from "./types";
 import { coreFoodCatalog } from "@/lib/data/foodCatalog";
 import { expandedFoodCatalog } from "@/lib/data/expandedFoodCatalog";
@@ -29,6 +30,11 @@ export type FoodConnectorStatus = {
 const openFoodFactsFields =
   "code,product_name,generic_name,brands,serving_size,serving_quantity,quantity,categories,nutriments,image_front_thumb_url";
 const localFoodCatalog = [...coreFoodCatalog, ...expandedFoodCatalog];
+
+const normalizeUsableProviderFood = (product: Record<string, unknown>) => {
+  const prepared = prepareFoodProviderProduct(product);
+  return prepared ? normalizeOpenFoodFactsProduct(prepared) : null;
+};
 
 export const foodConnectorStatus: FoodConnectorStatus = {
   provider: "Open Food Facts",
@@ -147,7 +153,7 @@ export const searchFoodDatabase = async (
     );
 
     const liveFoods = ((payload?.products ?? []) as Record<string, unknown>[])
-      .map((item) => normalizeOpenFoodFactsProduct(item))
+      .map(normalizeUsableProviderFood)
       .filter(Boolean) as FoodCatalogItem[];
     const foods = dedupeFoods([...localMatches, ...liveFoods], limit);
 
@@ -188,7 +194,7 @@ export const lookupFoodBarcode = async (code: string): Promise<FoodBarcodeResult
       trimmed
     )}?fields=${openFoodFactsFields}`
   );
-  const food = normalizeOpenFoodFactsProduct({
+  const food = normalizeUsableProviderFood({
     ...(payload?.product ?? {}),
     code: payload?.code ?? trimmed,
   });

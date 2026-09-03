@@ -104,6 +104,8 @@ import {
   shouldCancelPendingRestTimerNotification,
 } from "./rest_timer_notifications";
 import { equipmentAllowsExercise } from "./builder_equipment";
+import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
+import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import {
   bodyweightLocalDateKey,
   mergeBodyweightHistory,
@@ -266,12 +268,9 @@ type AppState = {
   sleepHours: number;
   energy: number;
   soreness: number;
-  caloriesLogged: number;
-  proteinLogged: number;
-  carbsLogged: number;
-  fatsLogged: number;
-  mealsLogged: number;
-  foodLog: ProductLogEntry[];
+  foodLog: FoodDiaryEntry[];
+  foodDiaryVersion: 1;
+  legacyNutritionTotals?: { calories: number; protein: number; carbs: number; fat: number };
   workoutLog: Record<string, WorkoutSetLog[]>;
   workoutSessions: Record<string, WorkoutSession>;
   workoutHistory: WorkoutHistoryEntry[];
@@ -513,12 +512,8 @@ const defaultState: AppState = {
   sleepHours: 7.1,
   energy: 7,
   soreness: 4,
-  caloriesLogged: 0,
-  proteinLogged: 0,
-  carbsLogged: 0,
-  fatsLogged: 0,
-  mealsLogged: 0,
   foodLog: [],
+  foodDiaryVersion: 1,
   workoutLog: {},
   workoutSessions: {},
   workoutHistory: [],
@@ -1408,55 +1403,7 @@ const normalizeSplit = (split: unknown): SplitDay[] | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
-const normalizeFoodLog = (items: unknown): ProductLogEntry[] => {
-  if (!Array.isArray(items)) return [];
-
-  return items
-    .map((item, index) => {
-      const raw = item as Partial<ProductLogEntry>;
-      if (!raw || typeof raw !== "object" || !raw.label) return null;
-      const nutrients =
-        raw.nutrients && typeof raw.nutrients === "object"
-          ? {
-              calories: Number(raw.nutrients.calories || raw.calories || 0),
-              protein: Number(raw.nutrients.protein || raw.protein || 0),
-              carbs: Number(raw.nutrients.carbs || raw.carbs || 0),
-              fat: Number(raw.nutrients.fat || raw.fat || 0),
-              fiber: Number(raw.nutrients.fiber || 0),
-              sugar: Number(raw.nutrients.sugar || 0),
-              sodiumMg: Number(raw.nutrients.sodiumMg || 0),
-              potassiumMg: Number(raw.nutrients.potassiumMg || 0),
-              calciumMg: Number(raw.nutrients.calciumMg || 0),
-              ironMg: Number(raw.nutrients.ironMg || 0),
-              magnesiumMg: Number(raw.nutrients.magnesiumMg || 0),
-              zincMg: Number(raw.nutrients.zincMg || 0),
-              vitaminCMg: Number(raw.nutrients.vitaminCMg || 0),
-              vitaminDMcg: Number(raw.nutrients.vitaminDMcg || 0),
-              vitaminAMcg: Number(raw.nutrients.vitaminAMcg || 0),
-              vitaminEMg: Number(raw.nutrients.vitaminEMg || 0),
-              vitaminKMcg: Number(raw.nutrients.vitaminKMcg || 0),
-              folateMcg: Number(raw.nutrients.folateMcg || 0),
-              vitaminB12Mcg: Number(raw.nutrients.vitaminB12Mcg || 0),
-              cholesterolMg: Number(raw.nutrients.cholesterolMg || 0),
-              saturatedFat: Number(raw.nutrients.saturatedFat || 0),
-              fluidMl: Number(raw.nutrients.fluidMl || 0),
-            }
-          : undefined;
-      return {
-        id: raw.id || `food-log-${index}`,
-        label: raw.label,
-        brand: raw.brand,
-        barcode: raw.barcode,
-        servingLabel: raw.servingLabel || "1 serving",
-        calories: Number(raw.calories ?? nutrients?.calories ?? 0),
-        protein: Number(raw.protein ?? nutrients?.protein ?? 0),
-        carbs: Number(raw.carbs ?? nutrients?.carbs ?? 0),
-        fat: Number(raw.fat ?? nutrients?.fat ?? 0),
-        nutrients,
-      } satisfies ProductLogEntry;
-    })
-    .filter(Boolean) as ProductLogEntry[];
-};
+const normalizeFoodLog = normalizeFoodDiary;
 
 const normalizeMusclePriorities = (priorities: unknown): Record<MuscleGroup, MusclePriority> => {
   if (!priorities || typeof priorities !== "object" || Array.isArray(priorities)) return { ...defaultMusclePriorities };
@@ -2212,6 +2159,17 @@ const loadState = (): AppState => {
       (shouldImportLegacyTraining ? normalizeSplit(migrateLegacyWorkoutSplit(legacyWorkoutSplit, exerciseLibrary)) : null);
     const activeDayId = typeof parsed.activeDayId === "string" ? parsed.activeDayId : defaultState.activeDayId;
     const activeSessionKey = activeDayId ? workoutSessionKey(mesocycleId, currentWeek, activeDayId) : null;
+    const legacyRaw = parsed.legacyNutritionTotals && typeof parsed.legacyNutritionTotals === "object"
+      ? parsed.legacyNutritionTotals as Record<string, unknown>
+      : parsed.foodDiaryVersion !== 1
+        ? { calories: parsed.caloriesLogged, protein: parsed.proteinLogged, carbs: parsed.carbsLogged, fat: parsed.fatsLogged }
+        : null;
+    const legacyTotals = legacyRaw ? {
+      calories: readClampedNumber(legacyRaw.calories, 0, 0, Number.MAX_SAFE_INTEGER),
+      protein: readClampedNumber(legacyRaw.protein, 0, 0, Number.MAX_SAFE_INTEGER),
+      carbs: readClampedNumber(legacyRaw.carbs, 0, 0, Number.MAX_SAFE_INTEGER),
+      fat: readClampedNumber(legacyRaw.fat, 0, 0, Number.MAX_SAFE_INTEGER),
+    } : undefined;
 
     return {
       ...defaultState,
@@ -2230,12 +2188,9 @@ const loadState = (): AppState => {
       sleepHours: readClampedNumber(parsed.sleepHours, defaultState.sleepHours, 0, 14),
       energy: Math.round(readClampedNumber(parsed.energy, defaultState.energy, 1, 10)),
       soreness: Math.round(readClampedNumber(parsed.soreness, defaultState.soreness, 1, 10)),
-      caloriesLogged: Math.round(readClampedNumber(parsed.caloriesLogged, defaultState.caloriesLogged, 0, 12000)),
-      proteinLogged: readClampedNumber(parsed.proteinLogged, defaultState.proteinLogged, 0, 700),
-      carbsLogged: readClampedNumber(parsed.carbsLogged, defaultState.carbsLogged, 0, 1500),
-      fatsLogged: readClampedNumber(parsed.fatsLogged, defaultState.fatsLogged, 0, 500),
-      mealsLogged: Math.round(readClampedNumber(parsed.mealsLogged, defaultState.mealsLogged, 0, 20)),
       foodLog: normalizeFoodLog(parsed.foodLog),
+      foodDiaryVersion: 1,
+      legacyNutritionTotals: legacyTotals && Object.values(legacyTotals).some(value => value > 0) ? legacyTotals : undefined,
       workoutLog: normalizeWorkoutLog(parsed.workoutLog),
       workoutSessions: normalizeWorkoutSessions(parsed.workoutSessions),
       workoutHistory,
@@ -2298,7 +2253,10 @@ const toneClass: Record<Suggestion["tone"], string> = {
     "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100",
 };
 
-const computePlan = (state: AppState): PlanModel => {
+const computePlan = (savedState: AppState, diaryDate: string): PlanModel => {
+  const intake = foodDiaryTotals(savedState.foodLog, diaryDate);
+  // Food advice and the diary share one source of truth: entries for this local day.
+  const state = { ...savedState, caloriesLogged: intake.calories, proteinLogged: intake.protein, carbsLogged: intake.carbs, fatsLogged: intake.fat };
   const kg = state.bodyWeightLb * 0.453592;
   const cm = state.heightIn * 2.54;
   const bmr = 10 * kg + 6.25 * cm - 5 * state.age + (state.sex === "male" ? 5 : -161);
@@ -5672,510 +5630,18 @@ function TodayView({
   );
 }
 
-function ProductScanner({
-  foodLog,
-  setState,
-}: {
-  foodLog?: ProductLogEntry[];
-  setState: React.Dispatch<React.SetStateAction<AppState>>;
-}) {
-  const [barcode, setBarcode] = useState("");
-  const [foodSearch, setFoodSearch] = useState("");
-  const [status, setStatus] = useState("");
-  const [scannedFood, setScannedFood] = useState<FoodCatalogItem | null>(null);
-  const [searchResults, setSearchResults] = useState<FoodCatalogItem[]>([]);
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [customEntry, setCustomEntry] = useState({
-    label: "",
-    calories: 0,
-    protein: 0,
-    carbs: 0,
-    fat: 0,
-  });
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
-  const streamRef = React.useRef<MediaStream | null>(null);
-  const scanIntervalRef = React.useRef<number | null>(null);
-
-  const stopCameraScan = () => {
-    if (scanIntervalRef.current !== null) {
-      window.clearInterval(scanIntervalRef.current);
-      scanIntervalRef.current = null;
-    }
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setCameraOpen(false);
-  };
-
-  useEffect(() => stopCameraScan, []);
-
-  const logProduct = (entry: ProductLogEntry) => {
-    setState((prev) => ({
-      ...prev,
-      caloriesLogged: prev.caloriesLogged + entry.calories,
-      proteinLogged: Math.round((prev.proteinLogged + entry.protein) * 10) / 10,
-      carbsLogged: Math.round((prev.carbsLogged + entry.carbs) * 10) / 10,
-      fatsLogged: Math.round((prev.fatsLogged + entry.fat) * 10) / 10,
-      foodLog: [entry, ...prev.foodLog].slice(0, 24),
-    }));
-    setStatus(`Logged ${entry.label}`);
-    setScannedFood(null);
-  };
-
-  const lookupBarcode = async (barcodeOverride?: string) => {
-    const code = (barcodeOverride ?? barcode).trim();
-    if (!code) return;
-
-    setStatus("Looking up product...");
-    setScannedFood(null);
-    try {
-      const result = await lookupFoodBarcode(code);
-      if (!result.food) {
-        setStatus("No product found. Add it as a custom item.");
-        setCustomEntry((prev) => ({ ...prev, label: prev.label || `Barcode ${code}` }));
-        return;
-      }
-      setBarcode(result.food.barcode ?? code);
-      setScannedFood(result.food);
-      setStatus(`Found ${foodTitle(result.food)}`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Product lookup failed.");
-    }
-  };
-
-  const searchFoods = async () => {
-    const query = foodSearch.trim();
-    if (query.length < 2) return;
-
-    setStatus("Searching foods...");
-    setSearchResults([]);
-    const localResult = searchLocalFoodDatabase(query, { limit: 8 });
-    if (localResult.foods.length > 0) {
-      setSearchResults(localResult.foods);
-      setStatus(`${localResult.foods.length} local foods found`);
-    }
-
-    try {
-      const result = await searchFoodDatabase(query, { limit: 8 });
-      setSearchResults(result.foods);
-      setStatus(
-        result.foods.length > 0
-          ? `${result.foods.length} foods found`
-          : localResult.foods.length > 0
-            ? `${localResult.foods.length} local foods found`
-            : "No foods found. Add custom."
-      );
-    } catch (error) {
-      if (localResult.foods.length > 0) {
-        setSearchResults(localResult.foods);
-        setStatus(`${localResult.foods.length} local foods found`);
-      } else {
-        setStatus(error instanceof Error ? error.message : "Food search failed.");
-      }
-    }
-  };
-
-  const startCameraScan = async () => {
-    const Detector = (window as Window & { BarcodeDetector?: any }).BarcodeDetector;
-    if (!Detector) {
-      setStatus("Camera scan unavailable. Enter the barcode.");
-      return;
-    }
-
-    try {
-      const detector = new Detector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
-      streamRef.current = stream;
-      setCameraOpen(true);
-      setStatus("Scanning...");
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-      }
-
-      scanIntervalRef.current = window.setInterval(async () => {
-        if (!videoRef.current) return;
-        try {
-          const results = await detector.detect(videoRef.current);
-          const value = results?.[0]?.rawValue;
-          if (!value) return;
-          stopCameraScan();
-          setBarcode(value);
-          void lookupBarcode(value);
-        } catch {
-          // Barcode detection can miss frames while the camera is moving.
-        }
-      }, 700);
-    } catch (error) {
-      stopCameraScan();
-      setStatus(error instanceof Error ? error.message : "Camera could not start.");
-    }
-  };
-
-  const scanBarcodeImage = async (file: File | null) => {
-    if (!file) return;
-    const Detector = (window as Window & { BarcodeDetector?: any }).BarcodeDetector;
-    if (!Detector) {
-      setStatus("Image scan unavailable. Enter the barcode.");
-      return;
-    }
-
-    try {
-      const detector = new Detector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
-      const bitmap = await createImageBitmap(file);
-      const results = await detector.detect(bitmap);
-      bitmap.close?.();
-      const value = results?.[0]?.rawValue;
-      if (!value) {
-        setStatus("No barcode found in image.");
-        return;
-      }
-      setBarcode(value);
-      void lookupBarcode(value);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Image scan failed.");
-    }
-  };
-
-  const logCustom = () => {
-    const label = customEntry.label.trim();
-    if (!label) return;
-    logProduct({
-      id: `custom-food-${Date.now()}`,
-      label,
-      servingLabel: "1 serving",
-      calories: Math.max(0, Math.round(customEntry.calories)),
-      protein: Math.max(0, Math.round(customEntry.protein * 10) / 10),
-      carbs: Math.max(0, Math.round(customEntry.carbs * 10) / 10),
-      fat: Math.max(0, Math.round(customEntry.fat * 10) / 10),
-      nutrients: {
-        calories: Math.max(0, Math.round(customEntry.calories)),
-        protein: Math.max(0, Math.round(customEntry.protein * 10) / 10),
-        carbs: Math.max(0, Math.round(customEntry.carbs * 10) / 10),
-        fat: Math.max(0, Math.round(customEntry.fat * 10) / 10),
-      },
-    });
-    setCustomEntry({ label: "", calories: 0, protein: 0, carbs: 0, fat: 0 });
-  };
-
-  return (
-    <Card className="self-start">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <ScanLine className="h-5 w-5 text-rose-500" />
-          Add food
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="grid gap-4">
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-          <Input
-            placeholder="Search food"
-            value={foodSearch}
-            onChange={(event) => setFoodSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void searchFoods();
-            }}
-          />
-          <Button variant="outline" className="gap-2" onClick={() => void searchFoods()} disabled={foodSearch.trim().length < 2}>
-            <Search className="h-4 w-4" />
-            Search
-          </Button>
-        </div>
-
-        {searchResults.length > 0 ? (
-          <div className="grid gap-2">
-            {searchResults.slice(0, 8).map((food) => (
-              <div
-                key={food.id}
-                className="flex items-center justify-between gap-3 rounded-[18px] border border-slate-200 bg-white/72 p-3 dark:border-white/10 dark:bg-white/[0.04]"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="truncate text-sm font-semibold text-slate-950 dark:text-white">{foodTitle(food)}</div>
-                    <Badge variant="outline" className="bg-white/70 text-[10px] dark:bg-white/[0.04]">
-                      {food.verified ? "Verified" : "Community"}
-                    </Badge>
-                  </div>
-                  <div className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    {Math.round(food.nutrients.calories || 0)} cal · {Math.round((food.nutrients.protein || 0) * 10) / 10}P /{" "}
-                    {Math.round((food.nutrients.carbs || 0) * 10) / 10}C / {Math.round((food.nutrients.fat || 0) * 10) / 10}F
-                  </div>
-                </div>
-                <Button size="sm" onClick={() => logProduct(productLogEntryFromFood(food))}>
-                  Add
-                </Button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-          <Input
-            inputMode="numeric"
-            placeholder="Barcode"
-            value={barcode}
-            onChange={(event) => setBarcode(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void lookupBarcode();
-            }}
-          />
-          <Button className="gap-2" onClick={() => void lookupBarcode()} disabled={!barcode.trim()}>
-            <Search className="h-4 w-4" />
-            Lookup
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <Button variant="outline" className="gap-2" onClick={() => void startCameraScan()}>
-            <Camera className="h-4 w-4" />
-            Camera
-          </Button>
-          <label className="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-200 bg-white/70 px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-white dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-100 dark:hover:bg-white/[0.08]">
-            <ScanLine className="h-4 w-4" />
-            Image
-            <input
-              type="file"
-              accept="image/*"
-              className="sr-only"
-              onChange={(event) => void scanBarcodeImage(event.target.files?.[0] ?? null)}
-            />
-          </label>
-        </div>
-
-        {cameraOpen ? (
-          <div className="overflow-hidden rounded-[22px] border border-rose-200 bg-slate-950 dark:border-rose-400/20">
-            <video ref={videoRef} className="aspect-video w-full object-cover" muted playsInline />
-            <Button variant="ghost" size="sm" className="m-2 text-white hover:bg-white/10" onClick={stopCameraScan}>
-              Stop camera
-            </Button>
-          </div>
-        ) : null}
-
-        {status ? <div className="rounded-2xl border border-slate-200 bg-white/72 px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04]">{status}</div> : null}
-
-        {scannedFood ? (
-          <div className="rounded-[22px] border border-emerald-200 bg-emerald-50/78 p-3 text-emerald-950 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
-            <div className="text-sm font-semibold">{foodTitle(scannedFood)}</div>
-            <div className="mt-1 text-xs opacity-75">
-              {Math.round(scannedFood.nutrients.calories || 0)} cal · {Math.round((scannedFood.nutrients.protein || 0) * 10) / 10}g protein
-            </div>
-            <Button size="sm" className="mt-3 w-full" onClick={() => logProduct(productLogEntryFromFood(scannedFood))}>
-              Add to food log
-            </Button>
-          </div>
-        ) : null}
-
-        <div className="grid gap-2 rounded-[22px] border border-slate-200 bg-white/62 p-3 dark:border-white/10 dark:bg-white/[0.035]">
-          <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Custom entry</div>
-          <Input
-            placeholder="Custom food"
-            value={customEntry.label}
-            onChange={(event) => setCustomEntry((prev) => ({ ...prev, label: event.target.value }))}
-          />
-          <div className="grid grid-cols-4 gap-2">
-            <Input
-              aria-label="Custom food calories"
-              type="number"
-              placeholder="Cal"
-              value={customEntry.calories}
-              onChange={(event) => setCustomEntry((prev) => ({ ...prev, calories: updateNumber(event.target.value, prev.calories) }))}
-            />
-            <Input
-              aria-label="Custom food protein"
-              type="number"
-              placeholder="P"
-              value={customEntry.protein}
-              onChange={(event) => setCustomEntry((prev) => ({ ...prev, protein: updateNumber(event.target.value, prev.protein) }))}
-            />
-            <Input
-              aria-label="Custom food carbs"
-              type="number"
-              placeholder="C"
-              value={customEntry.carbs}
-              onChange={(event) => setCustomEntry((prev) => ({ ...prev, carbs: updateNumber(event.target.value, prev.carbs) }))}
-            />
-            <Input
-              aria-label="Custom food fat"
-              type="number"
-              placeholder="F"
-              value={customEntry.fat}
-              onChange={(event) => setCustomEntry((prev) => ({ ...prev, fat: updateNumber(event.target.value, prev.fat) }))}
-            />
-          </div>
-          <Button variant="outline" className="gap-2" onClick={logCustom} disabled={!customEntry.label.trim()}>
-            <Plus className="h-4 w-4" />
-            Add custom
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function FoodView({
-  state,
-  model,
-  setState,
-}: {
+function FoodView({ state, model, setState }: {
   state: AppState;
   model: PlanModel;
   setState: React.Dispatch<React.SetStateAction<AppState>>;
 }) {
-  const calorieProgress = clamp((state.caloriesLogged / model.macros.calories) * 100, 0, 100);
-  const proteinProgress = clamp((state.proteinLogged / model.macros.protein) * 100, 0, 100);
-  const carbProgress = clamp((state.carbsLogged / model.macros.carbs) * 100, 0, 100);
-  const fatProgress = clamp((state.fatsLogged / model.macros.fats) * 100, 0, 100);
-
-  return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <Badge variant="secondary">Macro target</Badge>
-              <CardTitle className="mt-3 text-3xl">{formatNumber(model.macros.calories)} calories</CardTitle>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">
-                Maintenance: {formatNumber(model.maintenanceCalories)}
-              </p>
-            </div>
-            <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-4 py-3 text-right dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Left today</div>
-              <div className="mt-1 text-2xl font-semibold text-slate-950 dark:text-white">
-                {formatNumber(model.macros.remainingCalories)}
-              </div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                {model.macros.remainingProtein}P / {model.macros.remainingCarbs}C / {model.macros.remainingFats}F
-              </div>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <StatCard label="Protein" value={`${state.proteinLogged}/${model.macros.protein}g`} detail={`${Math.round(proteinProgress)}%`} Icon={Target} />
-            <StatCard label="Carbs" value={`${state.carbsLogged}/${model.macros.carbs}g`} detail={`${Math.round(carbProgress)}%`} Icon={Zap} />
-            <StatCard label="Fats" value={`${state.fatsLogged}/${model.macros.fats}g`} detail={`${Math.round(fatProgress)}%`} Icon={Flame} />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-[24px] border border-slate-200 bg-white/72 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-950 dark:text-white">
-                <span>Calories</span>
-                <span>{Math.round(calorieProgress)}%</span>
-              </div>
-              <Progress value={calorieProgress} className="mt-4" />
-            </div>
-            <div className="rounded-[24px] border border-slate-200 bg-white/72 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-950 dark:text-white">
-                <span>Protein</span>
-                <span>{Math.round(proteinProgress)}%</span>
-              </div>
-              <Progress value={proteinProgress} className="mt-4" />
-            </div>
-            <div className="rounded-[24px] border border-slate-200 bg-white/72 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-950 dark:text-white">
-                <span>Carbs</span>
-                <span>{Math.round(carbProgress)}%</span>
-              </div>
-              <Progress value={carbProgress} className="mt-4" />
-            </div>
-            <div className="rounded-[24px] border border-slate-200 bg-white/72 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              <div className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-950 dark:text-white">
-                <span>Fats</span>
-                <span>{Math.round(fatProgress)}%</span>
-              </div>
-              <Progress value={fatProgress} className="mt-4" />
-            </div>
-          </div>
-
-          <div className="rounded-[26px] border border-emerald-200 bg-emerald-50/78 p-5 text-emerald-950 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
-            <div className="font-semibold">Suggested next meal</div>
-            <p className="mt-1 text-sm leading-6 opacity-80">
-              {Math.min(45, Math.max(0, model.macros.remainingProtein))}g protein ·{" "}
-              {Math.min(70, Math.max(0, model.macros.remainingCarbs))}g carbs ·{" "}
-              {Math.min(20, Math.max(0, model.macros.remainingFats))}g fats
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-5 self-start">
-        <ProductScanner foodLog={state.foodLog} setState={setState} />
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Quick log</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <Field label="Calories">
-              <Input
-                type="number"
-                value={state.caloriesLogged}
-                onChange={(event) =>
-                  setState((prev) => ({ ...prev, caloriesLogged: updateNumber(event.target.value, prev.caloriesLogged) }))
-                }
-              />
-            </Field>
-            <Field label="Protein">
-              <Input
-                type="number"
-                value={state.proteinLogged}
-                onChange={(event) =>
-                  setState((prev) => ({ ...prev, proteinLogged: updateNumber(event.target.value, prev.proteinLogged) }))
-                }
-              />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Carbs">
-                <Input
-                  type="number"
-                  value={state.carbsLogged}
-                  onChange={(event) =>
-                    setState((prev) => ({ ...prev, carbsLogged: updateNumber(event.target.value, prev.carbsLogged) }))
-                  }
-                />
-              </Field>
-              <Field label="Fats">
-                <Input
-                  type="number"
-                  value={state.fatsLogged}
-                  onChange={(event) =>
-                    setState((prev) => ({ ...prev, fatsLogged: updateNumber(event.target.value, prev.fatsLogged) }))
-                  }
-                />
-              </Field>
-            </div>
-            <Field label="Meals">
-              <Input
-                type="number"
-                min={0}
-                max={8}
-                value={state.mealsLogged}
-                onChange={(event) =>
-                  setState((prev) => ({ ...prev, mealsLogged: updateNumber(event.target.value, prev.mealsLogged) }))
-                }
-              />
-            </Field>
-            <Button
-              className="gap-2"
-              onClick={() =>
-                setState((prev) => ({
-                  ...prev,
-                  caloriesLogged: Math.min(model.macros.calories, prev.caloriesLogged + 450),
-                  proteinLogged: Math.min(model.macros.protein, prev.proteinLogged + 40),
-                  carbsLogged: Math.min(model.macros.carbs, prev.carbsLogged + 45),
-                  fatsLogged: Math.min(model.macros.fats, prev.fatsLogged + 14),
-                  mealsLogged: prev.mealsLogged + 1,
-                }))
-              }
-            >
-              <CheckCircle2 className="h-4 w-4" />
-              Log meal
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
-  );
+  return <NutritionDiaryView
+    entries={state.foodLog}
+    today={foodDiaryDateKey(new Date())}
+    targets={{ calories: model.macros.calories, protein: model.macros.protein, carbs: model.macros.carbs, fat: model.macros.fats }}
+    legacyTotals={state.legacyNutritionTotals}
+    onEntriesChange={update => setState(prev => ({ ...prev, foodLog: update(prev.foodLog) }))}
+  />;
 }
 
 function TrainingView({
@@ -7931,19 +7397,28 @@ function MoreView({
 
 export default function App() {
   const [state, setState] = useState<AppState>(() => loadState());
+  const [nutritionDate, setNutritionDate] = useState(() => foodDiaryDateKey(new Date()));
   const [activeView, setActiveView] = useState<ViewId>(() => initialView());
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const [showResetPrompt, setShowResetPrompt] = useState(false);
   const scrollViewportRef = React.useRef<HTMLDivElement | null>(null);
   const viewScrollPositions = React.useRef<Partial<Record<ViewId, number>>>({});
-  const model = useMemo(() => computePlan(state), [state]);
+  const model = useMemo(() => computePlan(state, nutritionDate), [state, nutritionDate]);
   const restTimerSession = state.restTimer
     ? state.workoutSessions[state.restTimer.sessionKey] ?? null
     : null;
   const restTimerExerciseName = restTimerSession?.exercises.find(
     (exercise) => exercise.id === state.restTimer?.liftId
   )?.name;
+
+  useEffect(() => {
+    const refreshDate = () => setNutritionDate(foodDiaryDateKey(new Date()));
+    const interval = window.setInterval(refreshDate, 30_000);
+    window.addEventListener("focus", refreshDate);
+    document.addEventListener("visibilitychange", refreshDate);
+    return () => { window.clearInterval(interval); window.removeEventListener("focus", refreshDate); document.removeEventListener("visibilitychange", refreshDate); };
+  }, []);
 
   useEffect(() => {
     try {
