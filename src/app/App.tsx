@@ -44,7 +44,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
-import { RirSelect, WorkoutNumberField } from "@/components/training/WorkoutFields";
+import { WorkoutSetRow } from "@/components/training/WorkoutSetRow";
 import {
   MesocycleBuilder,
   type MesocycleBuilderDraft,
@@ -69,7 +69,6 @@ import {
   previousSetForRecommendation,
   resolveExerciseLoadIncrement,
   recommendationForSet,
-  summarizeWorkoutCompletion,
   targetRirForWeek,
   workoutLiftLogKey,
   workoutSessionKey,
@@ -87,6 +86,7 @@ import {
 import {
   addWorkoutExercise as addSessionWorkoutExercise,
   addWorkoutSet as addSessionWorkoutSet,
+  completeWorkoutSetFromDraft,
   finishWorkoutSession,
   migrateLegacyWorkoutSession,
   moveWorkoutExercise as moveSessionWorkoutExercise,
@@ -99,6 +99,8 @@ import {
   skipWorkoutSet as skipSessionWorkoutSet,
   updateWorkoutSet as updateSessionWorkoutSet,
   upsertSessionFeedback,
+  validateWorkoutSessionCompletion,
+  workoutSetDraft,
   type WorkoutSession,
 } from "./workout_session";
 import {
@@ -107,7 +109,7 @@ import {
   shouldCancelPendingRestTimerNotification,
 } from "./rest_timer_notifications";
 import { equipmentAllowsExercise } from "./builder_equipment";
-import { exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements } from "./exercise_training_preferences";
+import { clearExercisePainFlags, exerciseHistoryMatches, exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements, preserveExercisePainOnRename, recordExercisePainFlag } from "./exercise_training_preferences";
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
@@ -1904,9 +1906,7 @@ const latestHistoryForLift = (history: WorkoutHistoryEntry[], liftItem: WorkoutL
   history.find(
     (entry) =>
       entry.muscleGroup === liftItem.muscleGroup &&
-      ((liftItem.exerciseId && entry.exerciseId === liftItem.exerciseId) ||
-        entry.liftName.toLowerCase() === liftItem.name.toLowerCase() ||
-        (!entry.exerciseId && !liftItem.exerciseId && entry.liftId === liftItem.id))
+      exerciseHistoryMatches(liftItem, entry)
   ) ?? null;
 
 const guardWorkoutRecommendation = (
@@ -1929,6 +1929,25 @@ const recommendWorkoutSet = (
   liftItem, setIndex, latestHistoryForLift(state.workoutHistory, liftItem), targetRir, state.weightIncrement,
   { allowZeroLoad: liftPermitsZeroLoad(liftItem), exerciseLoadIncrement: state.exerciseLoadIncrements[exercisePreferenceKey(liftItem)] }
 ));
+
+const isUntouchedSessionSet = (session: WorkoutSession, setId: string) => {
+  const log = session.setLogs[setId];
+  const prescription = session.exercises.flatMap(exercise => exercise.prescriptions).find(item => item.id === setId);
+  return Boolean(log && prescription && !log.inputEdited && !log.done && !log.skipped &&
+    log.weight === 0 && log.reps === prescription.repRange.low && log.rir === prescription.targetRir);
+};
+
+const visibleSessionSetDraft = (state: AppState, session: WorkoutSession, liftItem: WorkoutLift, setId: string): WorkoutSetLog | null => {
+  const draft = workoutSetDraft(session, setId);
+  if (!draft) return null;
+  if (!isUntouchedSessionSet(session, setId)) return { ...draft };
+  const setIndex = session.exercises.find(exercise => exercise.id === liftItem.id)?.prescriptions.findIndex(item => item.id === setId) ?? -1;
+  if (setIndex < 0) return null;
+  const safe = guardWorkoutRecommendation(state, liftItem, setIndex, session.sessionKey, {
+    weight: draft.weight, reps: draft.reps, rir: draft.rir, reason: "Frozen session target.",
+  });
+  return { ...draft, weight: safe.weight, reps: safe.reps, rir: safe.rir };
+};
 
 const topSetFromSets = (sets: WorkoutSetLog[]): WorkoutSetLog | null => {
   const completed = sets.filter((setItem) => setItem.done && !setItem.skipped && setItem.weight > 0 && setItem.reps > 0);
@@ -3845,10 +3864,18 @@ function TodayView({
       }
     : plannedToday;
   useEffect(() => {
-    if (!state.restTimer || state.restTimer.sessionKey !== activeSessionKey || workoutIsPaused) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [activeSessionKey, state.restTimer, workoutIsPaused]);
+    const refresh = () => setNow(Date.now());
+    refresh();
+    if (!activeSession || activeSession.status !== "active") return undefined;
+    const timer = window.setInterval(refresh, 1000);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [activeSessionKey, activeSession?.status]);
 
   useEffect(() => {
     if (
@@ -3886,7 +3913,7 @@ function TodayView({
     const currentExerciseLogs = activeSession ? sessionSetLogsForExercise(activeSession, liftId) : [];
     const hasResolvedWork = currentExerciseLogs.some((setItem) => setItem.done || setItem.skipped);
     const hasUnresolvedInput = currentExerciseLogs.some(
-      (setItem) => !setItem.done && !setItem.skipped && (setItem.weight > 0 || setItem.reps <= 0)
+      (setItem) => !setItem.done && !setItem.skipped && Boolean(setItem.inputEdited)
     );
     if (hasUnresolvedInput) {
       setWorkoutMessage({
@@ -4130,8 +4157,8 @@ function TodayView({
         if (!muscleOptions.includes(draft.muscleGroup as MuscleGroup)) return;
         const muscleGroup = draft.muscleGroup as MuscleGroup;
         const key = recoveryCheckinKey(activeSessionKey, muscleGroup);
-        // Skipping is not a way to erase an already recorded stop constraint.
-        if (skipped && recoveryCheckins[key]?.jointPain >= 4 && !recoveryCheckins[key]?.skipped) return;
+        // Skipping an edit never replaces an already saved recovery assessment.
+        if (skipped && recoveryCheckins[key] && !recoveryCheckins[key].skipped) return;
         recoveryCheckins[key] = {
           id: key,
           sessionKey: activeSessionKey,
@@ -4248,6 +4275,7 @@ function TodayView({
             onSave={(drafts) => saveRecoveryCheckins(drafts)}
             onSkip={() => saveRecoveryCheckins(recoveryDrafts, true)}
             allowSkip={!recoveryStop}
+            skipLabel={currentRecoveryCheckins.some(item => !item.skipped) ? "Keep saved check-in" : "Skip check-in"}
           />
         ) : null}
         {currentRecoveryCheckins.length > 0 && recoveryDrafts.length === 0 ? (
@@ -4348,25 +4376,10 @@ function TodayView({
     );
   }
 
-  const getSetsForLift = (liftItem: WorkoutLift) => {
-    const sessionSets = activeSession
-      ? sessionSetLogsForExercise(activeSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({
-          id,
-          weight,
-          reps,
-          rir,
-          done,
-          skipped,
-        }))
-      : [];
-    return setsForLift(
-      liftItem,
-      sessionSets.length > 0
-        ? sessionSets
-        : savedSetsForLift(state.workoutLog, state.mesocycleId, state.currentWeek, today.id, liftItem.id),
-      workoutTargetRir
-    );
-  };
+  const getSetsForLift = (liftItem: WorkoutLift) =>
+    sessionSetLogsForExercise(activeSession, liftItem.id)
+      .map(log => visibleSessionSetDraft(state, activeSession, liftItem, log.id))
+      .filter((log): log is WorkoutSetLog => Boolean(log));
   const frozenRecommendationForSet = (liftItem: WorkoutLift, setIndex: number): SetRecommendation => {
     const prescription = activeSession.exercises
       .find((exercise) => exercise.id === liftItem.id)
@@ -4381,10 +4394,10 @@ function TodayView({
       reason: prescription.recommendationReason ?? "Session target saved when the workout started.",
     });
   };
-  const allSets = today.lifts.flatMap((liftItem) => getSetsForLift(liftItem).map(setItem => ({ ...setItem, loadRequired: !liftPermitsZeroLoad(liftItem) })));
-  const completion = summarizeWorkoutCompletion(allSets);
-  const completedSets = allSets.filter((setItem) => setItem.done || setItem.skipped).length;
-  const productiveSets = allSets.filter((setItem) => setItem.done && !setItem.skipped).length;
+  const allSets = activeSession.exercises.flatMap(exercise => sessionSetLogsForExercise(activeSession, exercise.id));
+  const completion = validateWorkoutSessionCompletion(activeSession);
+  const completedSets = completion.resolvedSets;
+  const productiveSets = completion.productiveSets;
   const totalVolume = allSets.reduce(
     (sum, setItem) => (setItem.done && !setItem.skipped ? sum + setItem.weight * setItem.reps : sum),
     0
@@ -4393,20 +4406,10 @@ function TodayView({
     getSetsForLift(liftItem).every((setItem) => setItem.done || setItem.skipped)
   ).length;
   const sessionProgress = allSets.length > 0 ? Math.round((completedSets / allSets.length) * 100) : 0;
-  const remainingSets = completion.incompleteSetIndexes.length;
-  const invalidCompletedSets = today.lifts.reduce((count, liftItem) => {
-    const permitsZeroLoad = liftPermitsZeroLoad(liftItem);
-    return (
-      count +
-      getSetsForLift(liftItem).filter(
-        (setItem) =>
-          setItem.done &&
-          !setItem.skipped &&
-          (setItem.reps <= 0 || setItem.weight < 0 || (!permitsZeroLoad && setItem.weight === 0))
-      ).length
-    );
-  }, 0);
-  const elapsedEstimate = Math.round((sessionProgress / 100) * state.sessionMinutes);
+  const remainingSets = completion.incompleteSetIds.length;
+  const invalidCompletedSets = completion.invalidCompletedSetIds.length;
+  const elapsedEndpoint = workoutIsPaused ? Date.parse(activeSession.pausedAt ?? activeSession.updatedAt) : now;
+  const elapsedSeconds = Math.max(0, Math.floor((elapsedEndpoint - Date.parse(activeSession.startedAt)) / 1000) - activeSession.pausedDurationSec);
   const activeRest =
     state.restTimer &&
     state.restTimer.sessionKey === activeSessionKey &&
@@ -4416,7 +4419,7 @@ function TodayView({
   const restSeconds = activeRest
     ? workoutIsPaused
       ? Math.max(0, Math.round(activeRest.pausedRemainingSec ?? (activeRest.endsAt - now) / 1000))
-      : Math.max(0, Math.ceil((activeRest.endsAt - now) / 1000))
+      : Math.min(activeRest.durationSec, Math.max(0, Math.ceil((activeRest.endsAt - now) / 1000)))
     : 0;
   const todayIndex = Math.max(0, model.split.days.findIndex((day) => day.id === today.id));
   const todayMuscleGroups = Array.from(new Set(today.lifts.map((liftItem) => liftItem.muscleGroup)));
@@ -4437,31 +4440,22 @@ function TodayView({
 
   const updateSet = (liftItem: WorkoutLift, setId: string, updates: Partial<WorkoutSetLog>) => {
     setState((prev) => {
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
-      const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
-      const current = setsForLift(
-        liftItem,
-        savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-        workoutTargetRir
-      );
+      const sessionKey = activeSession.sessionKey;
+      const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
+      const draft = visibleSessionSetDraft(prev, currentSession, liftItem, setId);
+      if (!draft) return prev;
+      const hasNumericEdit = ["weight", "reps", "rir"].some(key => Object.prototype.hasOwnProperty.call(updates, key));
+      const patch = hasNumericEdit ? { weight: draft.weight, reps: draft.reps, rir: draft.rir, ...updates } : updates;
+      const nextSession = updateSessionWorkoutSet(currentSession, setId, patch, new Date().toISOString());
+      if (nextSession === currentSession) return prev;
+      const logKey = workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftItem.id);
       return {
         ...prev,
-        workoutSessions: prev.workoutSessions[sessionKey]
-          ? {
-              ...prev.workoutSessions,
-              [sessionKey]: updateSessionWorkoutSet(
-                prev.workoutSessions[sessionKey],
-                setId,
-                updates,
-                new Date().toISOString()
-              ),
-            }
-          : prev.workoutSessions,
+        workoutSessions: { ...prev.workoutSessions, [sessionKey]: nextSession },
         workoutLog: {
           ...prev.workoutLog,
-          [logKey]: current.map((setItem) =>
-            setItem.id === setId ? { ...setItem, ...updates, skipped: updates.skipped ?? setItem.skipped } : setItem
-          ),
+          [logKey]: sessionSetLogsForExercise(nextSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({ id, weight, reps, rir, done, skipped })),
         },
       };
     });
@@ -4599,56 +4593,34 @@ function TodayView({
   const toggleSet = (liftItem: WorkoutLift, setId: string) => {
     setState((prev) => {
       const timestamp = Date.now();
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
-      const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
-      const current = setsForLift(
-        liftItem,
-        savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-        workoutTargetRir
-      );
-      let startRest = false;
-      const nextSets = current.map((setItem) => {
-        if (setItem.id !== setId) return setItem;
-        startRest = !setItem.done || Boolean(setItem.skipped);
-        return { ...setItem, done: !setItem.done || Boolean(setItem.skipped), skipped: false };
-      });
-      const shouldKeepExistingRest =
-        prev.restTimer &&
-        prev.restTimer.sessionKey === sessionKey &&
-        prev.restTimer.setId === setId &&
-        prev.restTimer.endsAt > timestamp;
-      const updatedSet = nextSets.find((setItem) => setItem.id === setId);
+      const sessionKey = activeSession.sessionKey;
+      const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
+      const currentSet = currentSession.setLogs[setId];
+      const draft = visibleSessionSetDraft(prev, currentSession, liftItem, setId);
+      if (!currentSet || !draft) return prev;
+      const undo = currentSet.done || currentSet.skipped;
+      const isoNow = new Date(timestamp).toISOString();
+      // Seed only a temporary session so a stale unsafe prescription cannot be
+      // confirmed behind a safer visible target. Failed confirmation persists nothing.
+      const seeded = !undo && isUntouchedSessionSet(currentSession, setId)
+        ? updateSessionWorkoutSet(currentSession, setId, { weight: draft.weight, reps: draft.reps, rir: draft.rir }, isoNow)
+        : currentSession;
+      const nextSession = undo
+        ? updateSessionWorkoutSet(currentSession, setId, { done: false, skipped: false }, isoNow)
+        : completeWorkoutSetFromDraft(seeded, setId, isoNow);
+      if (!undo && (!nextSession.setLogs[setId]?.done || nextSession.setLogs[setId]?.skipped)) return prev;
+      if (nextSession === currentSession) return prev;
+      const logKey = workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftItem.id);
       return {
         ...prev,
-        workoutSessions:
-          prev.workoutSessions[sessionKey] && updatedSet
-            ? {
-                ...prev.workoutSessions,
-                [sessionKey]: updateSessionWorkoutSet(
-                  prev.workoutSessions[sessionKey],
-                  setId,
-                  { done: updatedSet.done, skipped: false },
-                  new Date(timestamp).toISOString()
-                ),
-              }
-            : prev.workoutSessions,
-        workoutPaused: prev.workoutPaused,
-        restTimer:
-          startRest && !shouldKeepExistingRest
-            ? {
-                sessionKey,
-                liftId: liftItem.id,
-                setId,
-                startedAt: timestamp,
-                endsAt: timestamp + 120_000,
-                durationSec: 120,
-              }
-            : !startRest && prev.restTimer?.sessionKey === sessionKey && prev.restTimer.setId === setId
-              ? null
-              : prev.restTimer,
+        workoutSessions: { ...prev.workoutSessions, [sessionKey]: nextSession },
+        restTimer: !undo
+          ? { sessionKey, liftId: liftItem.id, setId, startedAt: timestamp, endsAt: timestamp + 120_000, durationSec: 120 }
+          : prev.restTimer?.sessionKey === sessionKey && prev.restTimer.setId === setId ? null : prev.restTimer,
         workoutLog: {
           ...prev.workoutLog,
-          [logKey]: nextSets,
+          [logKey]: sessionSetLogsForExercise(nextSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({ id, weight, reps, rir, done, skipped })),
         },
       };
     });
@@ -4656,30 +4628,19 @@ function TodayView({
 
   const skipSet = (liftItem: WorkoutLift, setId: string) => {
     setState((prev) => {
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
-      const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
-      const current = setsForLift(
-        liftItem,
-        savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-        workoutTargetRir
-      );
+      const sessionKey = activeSession.sessionKey;
+      const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active" || currentSession.setLogs[setId]?.done) return prev;
+      const nextSession = skipSessionWorkoutSet(currentSession, setId, new Date().toISOString());
+      if (nextSession === currentSession) return prev;
+      const logKey = workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftItem.id);
       return {
         ...prev,
-        workoutSessions: prev.workoutSessions[sessionKey]
-          ? {
-              ...prev.workoutSessions,
-              [sessionKey]: skipSessionWorkoutSet(prev.workoutSessions[sessionKey], setId, new Date().toISOString()),
-            }
-          : prev.workoutSessions,
-        restTimer:
-          prev.restTimer?.sessionKey === sessionKey && prev.restTimer.setId === setId
-            ? null
-            : prev.restTimer,
+        workoutSessions: { ...prev.workoutSessions, [sessionKey]: nextSession },
+        restTimer: prev.restTimer?.sessionKey === sessionKey && prev.restTimer.setId === setId ? null : prev.restTimer,
         workoutLog: {
           ...prev.workoutLog,
-          [logKey]: current.map((setItem) =>
-            setItem.id === setId ? { ...setItem, done: true, skipped: true } : setItem
-          ),
+          [logKey]: sessionSetLogsForExercise(nextSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({ id, weight, reps, rir, done, skipped })),
         },
       };
     });
@@ -4695,13 +4656,16 @@ function TodayView({
         savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
         workoutTargetRir
       );
-      const last = current[current.length - 1] ?? defaultSetLogsForLift(liftItem, workoutTargetRir)[0];
       const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
+      const lastRaw = current[current.length - 1];
+      const last = (lastRaw && visibleSessionSetDraft(prev, currentSession, liftItem, lastRaw.id)) ?? defaultSetLogsForLift(liftItem, workoutTargetRir)[0];
       const nextSession = currentSession
         ? addSessionWorkoutSet(currentSession, liftItem.id, timestamp, {
             reps: liftItem.reps,
             targetRir: last.rir,
             recommendedWeight: last.weight,
+            recommendedReps: last.reps,
           })
         : null;
       const nextSets = nextSession
@@ -4741,6 +4705,7 @@ function TodayView({
       const base = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
       const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
       const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
       const nextSession = currentSession
         ? addSessionWorkoutExercise(
             currentSession,
@@ -4783,6 +4748,11 @@ function TodayView({
   };
 
   const removeSet = (liftItem: WorkoutLift, setId: string) => {
+    const exercise = activeSession.exercises.find(item => item.id === liftItem.id);
+    if (exercise && exercise.prescriptions.length <= 1) {
+      setWorkoutMessage({ tone: "warning", text: "Keep at least one set for this exercise. Use Skip set if you are not doing it today." });
+      return;
+    }
     setState((prev) => {
       const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
       const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
@@ -4792,9 +4762,11 @@ function TodayView({
         workoutTargetRir
       );
       const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
       const nextSession = currentSession
         ? removeSessionWorkoutSet(currentSession, setId, new Date().toISOString())
         : null;
+      if (nextSession === currentSession) return prev;
       const nextSets = nextSession
         ? sessionSetLogsForExercise(nextSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({
             id,
@@ -4950,8 +4922,8 @@ function TodayView({
         return !completedKeys.has(candidateKey) && !nextSkippedWorkouts[candidateKey];
       });
       const nextMuscleFeedback = { ...prev.muscleFeedback };
-      const nextPainFreeExercises = new Set(prev.painFreeExercises);
-      const nextPainfulExercises = new Set(prev.painfulExercises);
+      let nextPainFreeExercises = [...prev.painFreeExercises];
+      let nextPainfulExercises = [...prev.painfulExercises];
       completedSession?.feedbackRecords
         .filter((record) => record.scope === "muscle" && muscleOptions.includes(record.muscleGroup as MuscleGroup))
         .forEach((record) => {
@@ -4965,11 +4937,11 @@ function TodayView({
           const exercise = completedSession.exercises.find((item) => item.id === record.exerciseSlotId);
           if (!exercise) return;
           if ((record.jointPain ?? 0) >= 2 || record.limitation === "joint") {
-            nextPainfulExercises.add(exercise.name);
-            nextPainFreeExercises.delete(exercise.name);
+            nextPainfulExercises = recordExercisePainFlag(exercise, nextPainfulExercises);
+            nextPainFreeExercises = clearExercisePainFlags(exercise, nextPainFreeExercises);
           } else if (record.jointPain === 0) {
-            nextPainFreeExercises.add(exercise.name);
-            nextPainfulExercises.delete(exercise.name);
+            nextPainFreeExercises = [...clearExercisePainFlags(exercise, nextPainFreeExercises), exercise.name];
+            nextPainfulExercises = clearExercisePainFlags(exercise, nextPainfulExercises);
           }
         });
       return {
@@ -5033,60 +5005,27 @@ function TodayView({
       ) : null}
       <Card>
         <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <Badge variant="secondary">Today</Badge>
-              <CardTitle className="mt-3 text-3xl">{today.focus}</CardTitle>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600 dark:text-slate-300">{today.intent}</p>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Week {state.currentWeek} · Session {todayIndex + 1}/{model.split.days.length}</p>
+              <CardTitle className="mt-1 text-2xl">{today.focus}</CardTitle>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{workoutTargetRir} RIR target · {productiveSets} {productiveSets === 1 ? "set" : "sets"} logged</p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                Week {state.currentWeek}
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                Session {todayIndex + 1}/{model.split.days.length}
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {workoutTargetRir} RIR
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {productiveSets}/{allSets.length} sets
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {completedExercises}/{today.lifts.length} lifts
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {formatNumber(totalVolume)} lb·reps
-              </Badge>
-              <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {model.readiness}% readiness
-              </Badge>
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                onClick={toggleWorkoutPause}
-              >
-                <PauseCircle className="h-4 w-4" />
+            <div className="flex items-center gap-1">
+              <Button variant="outline" size="sm" className="min-h-11 gap-2" onClick={toggleWorkoutPause}>
+                {workoutIsPaused ? <PlayCircle className="h-4 w-4" /> : <PauseCircle className="h-4 w-4" />}
                 {workoutIsPaused ? "Resume" : "Pause"}
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-2 text-rose-700 dark:text-rose-200"
-                onClick={() => setShowAbandonPrompt(true)}
-              >
-                <Trash2 className="h-4 w-4" />
-                Discard
-              </Button>
+              <Button variant="ghost" size="sm" className="min-h-11 text-rose-700 dark:text-rose-200" onClick={() => setShowAbandonPrompt(true)}>Discard</Button>
             </div>
           </div>
-          <div className="mt-5 rounded-[22px] border border-slate-200 bg-white/68 p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <div className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-950 dark:text-white">
-              <span>{sessionProgress}% complete</span>
-              <span>{elapsedEstimate}/{state.sessionMinutes} min</span>
+          <div className="mt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold text-slate-950 dark:text-white">
+              <span>{completedSets}/{allSets.length} sets resolved</span>
+              <span>{formatRestTime(elapsedSeconds)} elapsed{workoutIsPaused ? " · paused" : ""}</span>
             </div>
-            <Progress value={sessionProgress} className="mt-3" />
+            <Progress value={sessionProgress} className="mt-2" />
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Planned: {state.sessionMinutes} min · Elapsed excludes pauses.</p>
           </div>
           {activeRest ? (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-emerald-950 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
@@ -5128,7 +5067,7 @@ function TodayView({
             </div>
           ) : null}
         </CardHeader>
-        <CardContent className="grid gap-3">
+        <CardContent className="grid min-w-0 gap-3">
           {today.lifts.map((item, liftIndex) => {
             const sets = getSetsForLift(item);
             const bestEstimate = Math.max(0, ...sets.map(estimatedOneRepMax));
@@ -5148,7 +5087,7 @@ function TodayView({
             return (
               <div
                 key={item.id}
-                className="rounded-[24px] border border-slate-200 bg-white/72 p-3 dark:border-white/10 dark:bg-white/[0.04]"
+                className="min-w-0 max-w-full rounded-[24px] border border-slate-200 bg-white/72 p-3 dark:border-white/10 dark:bg-white/[0.04]"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -5158,12 +5097,12 @@ function TodayView({
                       {bestEstimate > 0 ? ` · e1RM ${bestEstimate}` : ""} {avgRir !== null ? ` · avg ${avgRir} RIR` : ""}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                     <Button
                       variant="ghost"
                       size="icon"
                       aria-label={`Move ${item.name} up`}
-                      disabled={liftIndex === 0}
+                      disabled={workoutIsPaused || liftIndex === 0}
                       onClick={() => moveLift(today.id, item.id, -1)}
                     >
                       <ArrowUp className="h-4 w-4" />
@@ -5172,7 +5111,7 @@ function TodayView({
                       variant="ghost"
                       size="icon"
                       aria-label={`Move ${item.name} down`}
-                      disabled={liftIndex === today.lifts.length - 1}
+                      disabled={workoutIsPaused || liftIndex === today.lifts.length - 1}
                       onClick={() => moveLift(today.id, item.id, 1)}
                     >
                       <ArrowDown className="h-4 w-4" />
@@ -5191,6 +5130,7 @@ function TodayView({
                       variant="outline"
                       size="sm"
                       className="gap-2"
+                      disabled={workoutIsPaused}
                       onClick={() => {
                         setExpandedLiftId(item.id);
                         setReplacementTarget(
@@ -5217,27 +5157,7 @@ function TodayView({
 
                 {isExpanded ? (
                   <>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                  <div className="min-w-0 rounded-[18px] border border-slate-200 bg-slate-50/80 p-2.5 dark:border-white/10 dark:bg-white/[0.04] sm:p-3">
-                    <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">
-                      <History className="h-3.5 w-3.5" />
-                      Previous
-                    </div>
-                    <div className="mt-1 text-xs font-semibold leading-5 text-slate-950 dark:text-white sm:text-sm">
-                      {formatHistorySet(previous?.topSet ?? null)}
-                    </div>
-                  </div>
-                  <div className="min-w-0 rounded-[18px] border border-rose-200 bg-rose-50/78 p-2.5 text-rose-950 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100 sm:p-3">
-                    <div className="text-xs font-semibold uppercase opacity-75">Today</div>
-                    <div className="mt-1 text-xs font-semibold leading-5 sm:text-sm">{formatRecommendation(firstRecommendation)}</div>
-                  </div>
-                  <div className="min-w-0 rounded-[18px] border border-slate-200 bg-slate-50/80 p-2.5 dark:border-white/10 dark:bg-white/[0.04] sm:p-3">
-                    <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Note</div>
-                    <div className="mt-1 text-xs leading-5 text-slate-700 dark:text-slate-200 sm:text-sm">
-                      {item.pattern} · {movementTargetLabel(item)}
-                    </div>
-                  </div>
-                </div>
+                    <p className="mt-3 text-xs leading-5 text-slate-500 dark:text-slate-400">{firstRecommendation.reason}</p>
 
                 {replacementTarget?.dayId === today.id && replacementTarget?.liftId === item.id ? (
                   <ReplacementPicker
@@ -5263,114 +5183,66 @@ function TodayView({
                 ) : null}
 
                 <div className="mt-3 grid gap-2">
-                  <div className="hidden grid-cols-[52px_minmax(160px,1fr)_112px_92px_82px_44px] gap-2 px-2 text-[11px] font-semibold uppercase text-slate-500 dark:text-slate-400 lg:grid">
-                    <span>Set</span>
-                    <span>Target</span>
-                    <span>Weight</span>
-                    <span>Reps</span>
-                    <span>RIR</span>
-                    <span />
-                  </div>
                   {sets.map((setItem, setIndex) => {
                     const recommendation = frozenRecommendationForSet(item, setIndex);
-                    const previousSet = previous?.sets[setIndex] ?? null;
-                    const setNeedsCorrection =
-                      setItem.done &&
-                      !setItem.skipped &&
-                      (setItem.reps <= 0 || setItem.weight < 0 || (!liftPermitsZeroLoad(item) && setItem.weight === 0));
+                    const previousSet = previousSetForRecommendation(previous, setIndex, { allowZeroLoad: liftPermitsZeroLoad(item) });
                     return (
-                      <div
-                        key={setItem.id}
-                        id={`workout-set-${item.id}-${setItem.id}`}
-                        className={[
-                          "grid gap-2 rounded-[18px] border p-2.5",
-                          setNeedsCorrection
-                            ? "border-rose-300 bg-rose-50/70 dark:border-rose-400/30 dark:bg-rose-400/10"
-                            : setItem.skipped
-                            ? "border-amber-200 bg-amber-50/70 dark:border-amber-400/20 dark:bg-amber-400/10"
-                            : "border-slate-200 bg-white/58 dark:border-white/10 dark:bg-white/[0.03]",
-                        ].join(" ")}
-                      >
-                        <div className="grid grid-cols-[44px_minmax(0,1fr)_44px] gap-2 lg:grid-cols-[52px_minmax(160px,1fr)_112px_92px_82px_44px] lg:items-center">
-                          <button
-                            type="button"
-                            onClick={() => toggleSet(item, setItem.id)}
-                            className={[
-                              "order-1 grid h-11 place-items-center rounded-2xl border text-sm font-semibold transition lg:h-10",
-                              setItem.skipped
-                                ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-400/20 dark:bg-amber-400/10 dark:text-amber-200"
-                                : setNeedsCorrection
-                                  ? "border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-400/30 dark:bg-rose-400/10 dark:text-rose-100"
-                                : setItem.done
-                                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-200"
-                                  : "border-slate-200 bg-white/72 text-slate-500 dark:border-white/10 dark:bg-white/[0.04]",
-                            ].join(" ")}
-                            aria-label={`${setItem.skipped ? "Skipped" : setItem.done ? "Completed" : "Complete"} ${item.name} set ${setIndex + 1}`}
-                          >
-                            {setItem.skipped ? "S" : setItem.done ? <CheckCircle2 className="h-4 w-4" /> : setIndex + 1}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => acceptRecommendation(item, setItem.id, recommendation)}
-                            className="order-2 min-h-11 min-w-0 rounded-[14px] border border-rose-200 bg-rose-50/72 px-3 py-1.5 text-left text-rose-950 transition hover:bg-rose-50 dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100 lg:min-h-10 lg:py-1"
-                            aria-label={`Use recommendation for ${item.name} set ${setIndex + 1}`}
-                          >
-                            <div className="text-[10px] font-semibold uppercase opacity-75">Today</div>
-                            <div className="truncate text-xs font-semibold sm:text-sm">{formatRecommendation(recommendation)}</div>
-                          </button>
-                          <WorkoutNumberField
-                            className="order-4 lg:order-3"
-                            label={`${item.name} set ${setIndex + 1} weight`}
-                            min={0}
-                            step={state.weightIncrement}
-                            inputMode="decimal"
-                            value={setItem.weight}
-                            onChange={(weight) => updateSet(item, setItem.id, { weight: Math.max(0, weight) })}
-                          />
-                          <WorkoutNumberField
-                            className="order-5 lg:order-4"
-                            label={`${item.name} set ${setIndex + 1} reps`}
-                            min={0}
-                            max={100}
-                            value={setItem.reps}
-                            onChange={(reps) => updateSet(item, setItem.id, { reps: clamp(Math.round(reps), 0, 100) })}
-                          />
-                          <RirSelect
-                            className="order-6 lg:order-5"
-                            label={`${item.name} set ${setIndex + 1} RIR`}
-                            value={setItem.rir}
-                            onChange={(rir) => updateSet(item, setItem.id, { rir: clamp(rir, 0, 4) })}
-                          />
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="order-3 lg:order-6"
-                            aria-label={`Remove set ${setIndex + 1}`}
-                            onClick={() => removeSet(item, setItem.id)}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 px-1 text-xs text-slate-500 dark:text-slate-400">
-                          <span className="min-w-0 flex-1 leading-5">
-                            {setNeedsCorrection
-                              ? "Add a valid load and rep count, or skip this set."
-                              : `Prev: ${formatHistorySet(previousSet)}${setIndex === 0 ? ` · ${recommendation.reason}` : ""}`}
-                          </span>
-                          <Button className="min-h-11 shrink-0 lg:min-h-8" variant="ghost" size="sm" onClick={() => skipSet(item, setItem.id)}>
-                            Skip set
-                          </Button>
-                        </div>
+                      <div key={setItem.id} id={`workout-set-${item.id}-${setItem.id}`}>
+                        <WorkoutSetRow
+                          exerciseName={item.name}
+                          setIndex={setIndex}
+                          setItem={setItem}
+                          recommendation={recommendation}
+                          previous={previousSet}
+                          step={resolveExerciseLoadIncrement(state.weightIncrement, state.exerciseLoadIncrements[exercisePreferenceKey(item)])}
+                          loadRequired={activeSession.exercises.find(exercise => exercise.id === item.id)?.loadRequired ?? !liftPermitsZeroLoad(item)}
+                          draftOnly={isUntouchedSessionSet(activeSession, setItem.id)}
+                          disabled={workoutIsPaused}
+                          onChange={patch => updateSet(item, setItem.id, patch)}
+                          onToggle={() => toggleSet(item, setItem.id)}
+                          onUseTarget={() => acceptRecommendation(item, setItem.id, recommendation)}
+                          onSkip={() => skipSet(item, setItem.id)}
+                          onRemove={() => removeSet(item, setItem.id)}
+                        />
                       </div>
                     );
                   })}
                 </div>
 
-                    <Button variant="outline" size="sm" className="mt-3 gap-2" onClick={() => addSet(item)}>
+                    <Button variant="outline" size="sm" className="mt-3 min-h-11 gap-2" disabled={workoutIsPaused} onClick={() => addSet(item)}>
                       <Plus className="h-4 w-4" />
                       Add set
                     </Button>
-                    <fieldset className="mt-3 rounded-[18px] border border-slate-200 bg-white/58 p-3 dark:border-white/10 dark:bg-white/[0.03]">
+                    <details className="mt-3 rounded-xl border border-slate-200 px-3 dark:border-white/10">
+                      <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold text-slate-600 dark:text-slate-300">Load increments</summary>
+                      <div className="grid gap-2 pb-3">
+                        <label className="grid gap-1 text-xs text-slate-500 dark:text-slate-400">
+                          {item.name} · next-session increment
+                          <select
+                            aria-label={`${item.name} load increment`}
+                            className="premium-input min-h-11 px-3 text-base"
+                            value={state.exerciseLoadIncrements[exercisePreferenceKey(item)] ?? "default"}
+                            onChange={event => {
+                              const chosen = event.target.value;
+                              setState(prev => {
+                                const key = exercisePreferenceKey(item);
+                                const increments = { ...prev.exerciseLoadIncrements };
+                                if (chosen === "default") delete increments[key];
+                                else increments[key] = Number(chosen);
+                                return { ...prev, exerciseLoadIncrements: normalizeExerciseLoadIncrements(increments) };
+                              });
+                            }}
+                          >
+                            <option value="default">Use global increment ({state.weightIncrement} lb)</option>
+                            {Array.from(new Set([0, 0.5, 1, 1.25, 2.5, 5, 10, 25, state.exerciseLoadIncrements[exercisePreferenceKey(item)]]))
+                              .filter((value): value is number => value !== undefined).sort((a, b) => a - b)
+                              .map(value => <option key={value} value={value}>{value === 0 ? "Reps only · hold load" : `${value} lb`}</option>)}
+                          </select>
+                        </label>
+                        <p className="text-xs leading-5 text-slate-500 dark:text-slate-400">Saved for the next session. Current targets stay unchanged; you can always edit the load actually used.</p>
+                      </div>
+                    </details>
+                    <fieldset disabled={workoutIsPaused} className="mt-3 rounded-[18px] border border-slate-200 bg-white/58 p-3 dark:border-white/10 dark:bg-white/[0.03]">
                       <legend className="px-1 text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">
                         Joint response
                       </legend>
@@ -5445,7 +5317,7 @@ function TodayView({
                   Add a movement without changing the rest of today’s workout.
                 </div>
               </div>
-              <Button variant="outline" size="sm" className="gap-2" onClick={() => setShowAddExercise((value) => !value)}>
+              <Button variant="outline" size="sm" className="gap-2" disabled={workoutIsPaused} onClick={() => setShowAddExercise((value) => !value)}>
                 <Plus className="h-4 w-4" />
                 {showAddExercise ? "Close" : "Add"}
               </Button>
@@ -6054,13 +5926,20 @@ function TrainingView({
   };
 
   const updateLift = (dayId: string, liftId: string, updates: Partial<WorkoutLift>) => {
-    ensureCustomSplit((split) =>
-      split.map((day) =>
-        day.id === dayId
-          ? { ...day, lifts: day.lifts.map((item) => (item.id === liftId ? { ...item, ...updates } : item)) }
-          : day
-      )
-    );
+    if (resumeOpenMesoSession()) return;
+    setState(prev => {
+      const split = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
+      const previousLift = split.find(day => day.id === dayId)?.lifts.find(item => item.id === liftId);
+      if (!previousLift) return prev;
+      const renamed = { ...previousLift, ...updates };
+      return {
+        ...prev,
+        painfulExercises: preserveExercisePainOnRename(previousLift, renamed, prev.painfulExercises),
+        customSplit: split.map(day => day.id === dayId
+          ? { ...day, lifts: day.lifts.map(item => item.id === liftId ? renamed : item) }
+          : day),
+      };
+    });
   };
 
   const selectMesoWeek = (week: number) => {

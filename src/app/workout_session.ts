@@ -55,6 +55,8 @@ export type WorkoutSetLogCompatible = {
 export type SessionSetLog = Readonly<
   WorkoutSetLogCompatible & {
     skipped: boolean;
+    /** An explicit entry/confirmation must survive even when its values equal old defaults. */
+    inputEdited?: boolean;
     updatedAt: string;
     completedAt: string | null;
   }
@@ -396,6 +398,7 @@ const defaultSetLogs = (exercises: readonly FrozenExerciseSlot[], now: string) =
         rir: prescription.targetRir,
         done: false,
         skipped: false,
+        inputEdited: false,
         updatedAt: now,
         completedAt: null,
       });
@@ -501,14 +504,25 @@ const normalizeSetLog = (
     ? isoTimestamp(raw.completedAt) ?? forceCompletedAt ?? updatedAt
     : null;
   const legacyRpe = typeof raw.rpe === "number" ? 10 - raw.rpe : undefined;
+  const weight = finiteNumber(raw.weight, 0, 0, MAX_LOAD);
+  const reps = integer(raw.reps, prescription.repRange.low, 0, MAX_REPS);
+  const rir = finiteNumber(raw.rir ?? legacyRpe, prescription.targetRir, 0, 5);
+  const inputEdited =
+    raw.inputEdited === true ||
+    done ||
+    skipped ||
+    weight !== 0 ||
+    reps !== prescription.repRange.low ||
+    rir !== prescription.targetRir;
 
   return freezeSetLog({
     id: prescription.id,
-    weight: finiteNumber(raw.weight, 0, 0, MAX_LOAD),
-    reps: integer(raw.reps, prescription.repRange.low, 0, MAX_REPS),
-    rir: finiteNumber(raw.rir ?? legacyRpe, prescription.targetRir, 0, 5),
+    weight,
+    reps,
+    rir,
     done,
     skipped: forceCompletedAt && !Boolean(raw.done) ? true : skipped,
+    inputEdited,
     updatedAt,
     completedAt,
   });
@@ -530,6 +544,12 @@ export const updateWorkoutSet = (
   if (patch.done === false) nextDone = false;
   const skipped = nextDone ? nextSkipped : false;
   const completedAt = nextDone ? current.completedAt ?? timestamp : null;
+  const inputEdited =
+    current.inputEdited === true ||
+    current.done ||
+    current.skipped ||
+    nextDone ||
+    ["weight", "reps", "rir"].some((key) => hasOwn(patch, key));
   const nextLog = freezeSetLog({
     ...current,
     weight: finiteNumber(patch.weight, current.weight, 0, MAX_LOAD),
@@ -537,6 +557,7 @@ export const updateWorkoutSet = (
     rir: finiteNumber(patch.rir, current.rir, 0, 5),
     done: nextDone,
     skipped,
+    inputEdited,
     updatedAt: timestamp,
     completedAt,
   });
@@ -545,6 +566,71 @@ export const updateWorkoutSet = (
     updatedAt: timestamp,
     setLogs: Object.freeze({ ...session.setLogs, [setId]: nextLog }),
   });
+};
+
+/**
+ * An untouched open set displays its frozen target, not a recorded result.
+ * This selector never writes suggestions into actual logs or completion totals.
+ */
+export const workoutSetDraft = (
+  session: WorkoutSession,
+  setId: string
+): Readonly<WorkoutSetLogCompatible> | null => {
+  if (!hasOwn(session.setLogs, setId)) return null;
+  const current = session.setLogs[setId];
+  const prescription = session.exercises
+    .flatMap((exercise) => exercise.prescriptions)
+    .find((item) => item.id === setId);
+  if (!prescription) return null;
+  const entered =
+    session.status === "completed" ||
+    current.inputEdited === true ||
+    current.done ||
+    current.skipped ||
+    current.weight !== 0 ||
+    current.reps !== prescription.repRange.low ||
+    current.rir !== prescription.targetRir;
+  return Object.freeze({
+    id: current.id,
+    weight: entered ? current.weight : prescription.recommendedWeight ?? 0,
+    reps: entered ? current.reps : prescription.recommendedReps,
+    rir: entered ? current.rir : prescription.targetRir,
+    done: current.done,
+    skipped: current.skipped,
+  });
+};
+
+/** Confirm the entire visible draft in one atomic, validated transition. */
+export const completeWorkoutSetFromDraft = (
+  session: WorkoutSession,
+  setId: string,
+  now: string
+): WorkoutSession => {
+  if (session.status !== "active") return session;
+  const draft = workoutSetDraft(session, setId);
+  if (!draft || draft.done || draft.skipped) return session;
+  const exercise = session.exercises.find((item) =>
+    item.prescriptions.some((prescription) => prescription.id === setId)
+  );
+  if (
+    !exercise ||
+    !Number.isFinite(draft.weight) ||
+    draft.weight > MAX_LOAD ||
+    (exercise.loadRequired ? draft.weight <= 0 : draft.weight < 0) ||
+    !Number.isInteger(draft.reps) ||
+    draft.reps <= 0 ||
+    draft.reps > MAX_REPS ||
+    !Number.isFinite(draft.rir) ||
+    draft.rir < 0 ||
+    draft.rir > 5
+  ) return session;
+  return updateWorkoutSet(session, setId, {
+    weight: draft.weight,
+    reps: draft.reps,
+    rir: draft.rir,
+    done: true,
+    skipped: false,
+  }, now);
 };
 
 export const skipWorkoutSet = (session: WorkoutSession, setId: string, now: string) =>
@@ -608,6 +694,7 @@ export const addWorkoutSet = (
     rir: prescription.targetRir,
     done: false,
     skipped: false,
+    inputEdited: false,
     updatedAt: timestamp,
     completedAt: null,
   });
@@ -725,6 +812,7 @@ export const replaceWorkoutExercise = (
               rir: prescription.targetRir,
               done: false,
               skipped: false,
+              inputEdited: false,
               updatedAt: timestamp,
               completedAt: null,
             }),
@@ -942,6 +1030,7 @@ export const finishWorkoutSession = (
       ...current,
       done: true,
       skipped: true,
+      inputEdited: true,
       updatedAt: timestamp,
       completedAt: timestamp,
     });

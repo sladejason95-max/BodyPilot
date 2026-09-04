@@ -17,6 +17,25 @@ export const exercisePreferenceKey = (lift: ExercisePreferenceIdentity): string 
   return name ? `name:${name}` : "";
 };
 
+/** Explicit exercise IDs take precedence; names and slots only bridge genuinely legacy records. */
+export const exerciseHistoryMatches = (
+  lift: ExercisePreferenceIdentity & { id?: string },
+  entry: { exerciseId?: string; liftName: string; liftId?: string },
+): boolean => {
+  const liftExerciseId = normalizedText(lift?.exerciseId);
+  const entryExerciseId = normalizedText(entry?.exerciseId);
+  if (liftExerciseId && entryExerciseId) return liftExerciseId === entryExerciseId;
+
+  const liftName = normalizedText(lift?.name);
+  const entryName = normalizedText(entry?.liftName);
+  if (liftName && entryName && liftName === entryName) return true;
+
+  if (liftExerciseId || entryExerciseId) return false;
+  const liftSlotId = normalizedText(lift?.id);
+  const entrySlotId = normalizedText(entry?.liftId);
+  return Boolean(liftSlotId && entrySlotId && liftSlotId === entrySlotId);
+};
+
 const normalizedStorageKey = (key: string): string => {
   const normalized = normalizedText(key);
   const prefixed = /^(id|name)\s*:\s*(.*)$/.exec(normalized);
@@ -65,4 +84,53 @@ export const hasExercisePainFlag = (
     const text = typeof flag === "string" ? flag : "";
     return candidates.has(normalizedText(text)) || candidates.has(normalizedStorageKey(text));
   });
+};
+
+/** Remove every current ID/name/slug alias, preserving the order and spelling of unrelated flags. */
+export const clearExercisePainFlags = (
+  lift: ExercisePreferenceIdentity,
+  painful: readonly string[],
+): string[] => {
+  if (!Array.isArray(painful)) return [];
+  return painful.filter((flag) => typeof flag === "string" && !hasExercisePainFlag(lift, [flag]));
+};
+
+/** Save stable identity plus the current name, which remains compatible with legacy substitution ranking. */
+export const recordExercisePainFlag = (
+  lift: ExercisePreferenceIdentity,
+  painful: readonly string[],
+): string[] => {
+  const key = exercisePreferenceKey(lift);
+  if (!key) return Array.isArray(painful) ? [...painful] : [];
+  const aliases = [key, normalizedText(lift.name)].filter(Boolean);
+  return [...clearExercisePainFlags(lift, painful), ...new Set(aliases)];
+};
+
+/**
+ * Call when renaming the same exercise, not replacing it. Stable IDs or legacy
+ * slot IDs prove continuity; a fully name-only legacy item relies on that
+ * explicit rename action. Conflicting known identities never inherit pain.
+ */
+export const preserveExercisePainOnRename = (
+  previousLift: ExercisePreferenceIdentity & { id?: string },
+  renamedLift: ExercisePreferenceIdentity & { id?: string },
+  painful: readonly string[],
+): string[] => {
+  const unchanged = Array.isArray(painful) ? [...painful] : [];
+  if (!hasExercisePainFlag(previousLift, painful) || !exercisePreferenceKey(renamedLift)) return unchanged;
+
+  const previousId = normalizedText(previousLift.exerciseId);
+  const renamedId = normalizedText(renamedLift.exerciseId);
+  if (previousId && renamedId && previousId !== renamedId) return unchanged;
+
+  const sameStableId = Boolean(previousId && renamedId && previousId === renamedId);
+  if (!sameStableId) {
+    const previousSlot = normalizedText(previousLift.id);
+    const renamedSlot = normalizedText(renamedLift.id);
+    const sameSlot = Boolean(previousSlot && renamedSlot && previousSlot === renamedSlot);
+    const namesOnly = !previousId && !renamedId && !previousSlot && !renamedSlot;
+    if (!sameSlot && !namesOnly) return unchanged;
+  }
+
+  return recordExercisePainFlag(renamedLift, clearExercisePainFlags(previousLift, painful));
 };

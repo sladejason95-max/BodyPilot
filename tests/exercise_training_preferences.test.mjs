@@ -1,10 +1,58 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  exerciseHistoryMatches,
   exercisePreferenceKey,
+  clearExercisePainFlags,
   hasExercisePainFlag,
   normalizeExerciseLoadIncrements,
+  preserveExercisePainOnRename,
+  recordExercisePainFlag,
 } from "../src/app/exercise_training_preferences.ts";
+
+test("history never transfers between different explicit exercise IDs even when names and slots match", () => {
+  const lift = { exerciseId: "new-machine", name: "Machine Press", id: "same-slot" };
+  assert.equal(exerciseHistoryMatches(lift, {
+    exerciseId: "old-machine", liftName: "Machine Press", liftId: "same-slot",
+  }), false);
+  assert.equal(exerciseHistoryMatches(lift, {
+    exerciseId: "NEW-MACHINE", liftName: "Renamed press", liftId: "different-slot",
+  }), true);
+  assert.equal(exerciseHistoryMatches({ ...lift, exerciseId: " DB   PRESS " }, {
+    exerciseId: "db press", liftName: "Different label",
+  }), true);
+});
+
+test("legacy history with one missing exercise ID falls back only to the normalized exact name", () => {
+  assert.equal(exerciseHistoryMatches({ exerciseId: "press", name: " Bench   Press " }, {
+    liftName: "BENCH\tPRESS",
+  }), true);
+  assert.equal(exerciseHistoryMatches({ name: "Bench Press" }, {
+    exerciseId: "press", liftName: " Bench Press ",
+  }), true);
+  assert.equal(exerciseHistoryMatches({ exerciseId: "press", name: "Bench Press", id: "slot" }, {
+    liftName: "Incline Bench Press", liftId: "slot",
+  }), false);
+  assert.equal(exerciseHistoryMatches({ name: "Bench Press", id: "slot" }, {
+    exerciseId: "press", liftName: "Incline Bench Press", liftId: "slot",
+  }), false);
+  assert.equal(exerciseHistoryMatches({ exerciseId: "press", name: "Bench Press" }, {
+    liftName: "bench-press",
+  }), false);
+});
+
+test("both missing exercise IDs permit a nonempty matching legacy slot without matching empty identities", () => {
+  assert.equal(exerciseHistoryMatches({ name: "New label", id: " OLD-SLOT " }, {
+    liftName: "Old label", liftId: "old-slot",
+  }), true);
+  assert.equal(exerciseHistoryMatches({ name: "Row" }, { liftName: "Row" }), true);
+  assert.equal(exerciseHistoryMatches({ exerciseId: " ", name: "Row", id: "slot" }, {
+    exerciseId: "", liftName: "Renamed row", liftId: "slot",
+  }), true);
+  assert.equal(exerciseHistoryMatches({ name: "Row" }, { liftName: "Press" }), false);
+  assert.equal(exerciseHistoryMatches({ name: " " }, { liftName: " " }), false);
+  assert.equal(exerciseHistoryMatches({ name: "Row", id: "slot-a" }, { liftName: "Press", liftId: "slot-b" }), false);
+});
 
 test("exercise preference keys prioritize stable IDs and survive display-name changes", () => {
   const original = { exerciseId: "  DB-Press  ", name: "Dumbbell press" };
@@ -98,4 +146,78 @@ test("custom-name pain flags support whitespace, punctuation slugs, and exact Un
   assert.equal(hasExercisePainFlag({ name: "  " }, [" "]), false);
   assert.equal(hasExercisePainFlag({ name: "Row" }, [null, false, 0]), false);
   assert.equal(hasExercisePainFlag({ name: "Row" }, null), false);
+});
+
+test("recording pain upgrades matching aliases to stable identity and current name without mutating unrelated flags", () => {
+  const lift = { exerciseId: " PRESS-ID ", name: "Bench Press" };
+  const original = Object.freeze(["bench-press", " BENCH   PRESS ", "press-id", "name:bench press", " Incline press ", "id:row"]);
+  const recorded = recordExercisePainFlag(lift, original);
+  assert.deepEqual(recorded, [" Incline press ", "id:row", "id:press-id", "bench press"]);
+  assert.equal(hasExercisePainFlag({ ...lift, name: "Renamed press" }, recorded), true);
+  assert.deepEqual(recordExercisePainFlag(lift, recorded), recorded);
+  assert.equal(original.length, 6);
+});
+
+test("explicit pain-free clearing removes all current ID/name/slug aliases but no related or unrelated exercise", () => {
+  const lift = { exerciseId: "press-id", name: "Bench Press" };
+  const original = Object.freeze([
+    " PRESS-ID ", "id: PRESS-ID", " Bench  Press ", "name: BENCH PRESS", "bench-press",
+    "incline bench press", "id:press-id-2", "id:row", "bench",
+  ]);
+  assert.deepEqual(clearExercisePainFlags(lift, original), [
+    "incline bench press", "id:press-id-2", "id:row", "bench",
+  ]);
+  assert.equal(original.length, 9);
+});
+
+test("renaming an ID-backed exercise migrates legacy name-only pain and removes superseded aliases", () => {
+  const previous = { exerciseId: "press-id", id: "slot", name: "Bench Press" };
+  const renamed = { ...previous, name: "Flat Bench Press" };
+  const flags = Object.freeze([" BENCH PRESS ", "bench-press", "Row"]);
+  const migrated = preserveExercisePainOnRename(previous, renamed, flags);
+  assert.deepEqual(migrated, ["Row", "id:press-id", "flat bench press"]);
+  assert.equal(hasExercisePainFlag(renamed, migrated), true);
+  assert.deepEqual(clearExercisePainFlags(renamed, migrated), ["Row"]);
+  assert.deepEqual(flags, [" BENCH PRESS ", "bench-press", "Row"]);
+});
+
+test("a legacy rename can retain pain by unchanged slot while gaining a stable exercise ID", () => {
+  const previous = { id: "same-slot", name: "Old custom row" };
+  const renamed = { id: " SAME-SLOT ", exerciseId: "custom-row", name: "New custom row" };
+  const flags = preserveExercisePainOnRename(previous, renamed, ["old-custom-row", "Squat"]);
+  assert.deepEqual(flags, ["Squat", "id:custom-row", "new custom row"]);
+  assert.equal(hasExercisePainFlag(renamed, flags), true);
+  assert.deepEqual(clearExercisePainFlags(renamed, flags), ["Squat"]);
+});
+
+test("name-only legacy rename preserves pain through an explicit rename action", () => {
+  const renamed = { name: "Renamed cable row" };
+  const flags = preserveExercisePainOnRename({ name: "Custom row" }, renamed, ["custom row", "squat"]);
+  assert.deepEqual(flags, ["squat", "name:renamed cable row", "renamed cable row"]);
+  assert.equal(hasExercisePainFlag(renamed, flags), true);
+});
+
+test("rename migration never transfers pain across conflicting stable IDs or unrelated legacy slots", () => {
+  const flags = Object.freeze(["Bench Press", "id:old-machine", "Row"]);
+  assert.deepEqual(preserveExercisePainOnRename(
+    { exerciseId: "old-machine", id: "same-slot", name: "Bench Press" },
+    { exerciseId: "new-machine", id: "same-slot", name: "Bench Press" }, flags,
+  ), flags);
+  assert.deepEqual(preserveExercisePainOnRename(
+    { id: "old-slot", name: "Bench Press" },
+    { id: "new-slot", name: "Different movement" }, flags,
+  ), flags);
+  assert.deepEqual(preserveExercisePainOnRename(
+    { exerciseId: "old-machine", name: "Bench Press" },
+    { name: "Different movement" }, flags,
+  ), flags);
+});
+
+test("absent pain and invalid empty identities never create new flags", () => {
+  const flags = ["Row"];
+  assert.deepEqual(preserveExercisePainOnRename({ name: "Press" }, { name: "Renamed press" }, flags), flags);
+  assert.deepEqual(preserveExercisePainOnRename({ name: "Row" }, { name: "  " }, flags), flags);
+  assert.deepEqual(recordExercisePainFlag({ name: "  " }, flags), flags);
+  assert.deepEqual(clearExercisePainFlags({ name: "Press" }, flags), flags);
+  assert.deepEqual(clearExercisePainFlags({ name: "Press" }, null), []);
 });

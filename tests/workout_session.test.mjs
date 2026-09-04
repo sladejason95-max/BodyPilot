@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   WORKOUT_SESSION_SCHEMA_VERSION,
   addWorkoutSet,
+  completeWorkoutSetFromDraft,
   createWorkoutSessionId,
   finishWorkoutSession,
   migrateLegacyWorkoutSession,
@@ -19,6 +20,7 @@ import {
   updateWorkoutSet,
   upsertSessionFeedback,
   validateWorkoutSessionCompletion,
+  workoutSetDraft,
 } from "../src/app/workout_session.ts";
 
 const T0 = "2026-09-03T12:00:00.000Z";
@@ -412,4 +414,201 @@ test("a replacement with incompatible history resets logs and prior prescription
     { weight: 0, reps: 8, done: false }
   );
   assert.equal(replaced.feedbackRecords.some((record) => record.exerciseSlotId === "machine-press"), false);
+});
+
+const sessionWithTarget = (options = {}) => startWorkoutSession({
+  ...sessionInput(),
+  exercises: [{
+    ...sessionInput().exercises[0],
+    loadRequired: options.loadRequired ?? true,
+    sets: [{
+      id: "target-set",
+      reps: "8-12",
+      recommendedWeight: options.weight ?? 105,
+      recommendedReps: 11,
+      targetRir: 2,
+    }],
+  }],
+}, T0);
+
+test("untouched drafts display frozen targets without recording completed or productive work", () => {
+  const session = sessionWithTarget();
+  const savedBeforeReading = JSON.stringify(session);
+  const draft = workoutSetDraft(session, "target-set");
+  assert.deepEqual(draft, {
+    id: "target-set", weight: 105, reps: 11, rir: 2, done: false, skipped: false,
+  });
+  assert.equal(Object.isFrozen(draft), true);
+  assert.equal(JSON.stringify(session), savedBeforeReading);
+  assert.equal(session.setLogs["target-set"].weight, 0);
+  assert.equal(session.setLogs["target-set"].reps, 8);
+  assert.equal(session.setLogs["target-set"].inputEdited, false);
+  const validation = validateWorkoutSessionCompletion(session);
+  assert.equal(validation.productiveSets, 0);
+  assert.equal(validation.resolvedSets, 0);
+  assert.equal(validation.canComplete, false);
+  assert.equal(finishWorkoutSession(session, { now: T1 }).completed, false);
+});
+
+test("one confirmation atomically records the entire visible target and is idempotent", () => {
+  const session = sessionWithTarget();
+  const completed = completeWorkoutSetFromDraft(session, "target-set", T1);
+  assert.equal(session.setLogs["target-set"].done, false);
+  assert.equal(completed.revision, session.revision + 1);
+  assert.deepEqual(workoutSetDraft(completed, "target-set"), {
+    id: "target-set", weight: 105, reps: 11, rir: 2, done: true, skipped: false,
+  });
+  assert.equal(completed.setLogs["target-set"].completedAt, T1);
+  assert.equal(completed.setLogs["target-set"].inputEdited, true);
+  assert.equal(validateWorkoutSessionCompletion(completed).productiveSets, 1);
+  assert.equal(validateWorkoutSessionCompletion(completed).canComplete, true);
+  assert.equal(completeWorkoutSetFromDraft(completed, "target-set", T2), completed);
+  assert.equal(completed.exercises, session.exercises);
+});
+
+test("manual draft edits override the target through reload and one confirmation", () => {
+  const session = sessionWithTarget();
+  const edited = updateWorkoutSet(session, "target-set", {
+    ...workoutSetDraft(session, "target-set"), weight: 95, reps: 9, rir: 3,
+  }, T1);
+  assert.equal(edited.setLogs["target-set"].inputEdited, true);
+  assert.equal(edited.setLogs["target-set"].done, false);
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(edited)), { now: T2 });
+  assert.ok(restored);
+  assert.deepEqual(workoutSetDraft(restored, "target-set"), {
+    id: "target-set", weight: 95, reps: 9, rir: 3, done: false, skipped: false,
+  });
+  const completed = completeWorkoutSetFromDraft(restored, "target-set", T2);
+  assert.equal(completed.setLogs["target-set"].weight, 95);
+  assert.equal(completed.setLogs["target-set"].reps, 9);
+  assert.equal(completed.setLogs["target-set"].rir, 3);
+  assert.equal(completed.setLogs["target-set"].done, true);
+});
+
+test("any explicit numeric-field patch marks entry, even when equal to old defaults", () => {
+  for (const patch of [{ weight: 0 }, { reps: 8 }, { rir: 2 }]) {
+    const edited = updateWorkoutSet(sessionWithTarget(), "target-set", patch, T1);
+    assert.equal(edited.setLogs["target-set"].inputEdited, true);
+    assert.equal(workoutSetDraft(edited, "target-set").weight, 0);
+    const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(edited)), { now: T2 });
+    assert.equal(restored.setLogs["target-set"].inputEdited, true);
+    assert.equal(workoutSetDraft(restored, "target-set").weight, 0);
+  }
+});
+
+test("explicit zero bodyweight edits survive reload even when matching legacy default values", () => {
+  const initial = sessionWithTarget({ loadRequired: false, weight: 5 });
+  const edited = updateWorkoutSet(initial, "target-set", { weight: 0, reps: 8, rir: 2 }, T1);
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(edited)), { now: T2 });
+  assert.ok(restored);
+  assert.deepEqual(workoutSetDraft(restored, "target-set"), {
+    id: "target-set", weight: 0, reps: 8, rir: 2, done: false, skipped: false,
+  });
+  const completed = completeWorkoutSetFromDraft(restored, "target-set", T2);
+  assert.equal(completed.setLogs["target-set"].weight, 0);
+  assert.equal(completed.setLogs["target-set"].reps, 8);
+  assert.equal(validateWorkoutSessionCompletion(completed).canComplete, true);
+});
+
+test("one confirmation rejects missing required load and zero reps without mutating or completing", () => {
+  const noLoad = sessionWithTarget({ weight: 0 });
+  assert.equal(completeWorkoutSetFromDraft(noLoad, "target-set", T1), noLoad);
+  assert.equal(noLoad.setLogs["target-set"].done, false);
+  const invalidReps = updateWorkoutSet(sessionWithTarget(), "target-set", {
+    weight: 100, reps: 0, rir: 2,
+  }, T1);
+  assert.equal(completeWorkoutSetFromDraft(invalidReps, "target-set", T2), invalidReps);
+  assert.equal(invalidReps.setLogs["target-set"].completedAt, null);
+  const optionalLoad = sessionWithTarget({ loadRequired: false, weight: 0 });
+  assert.equal(completeWorkoutSetFromDraft(optionalLoad, "target-set", T1).setLogs["target-set"].done, true);
+});
+
+test("one confirmation is unavailable when paused, completed, skipped, or missing", () => {
+  const initial = sessionWithTarget();
+  const paused = pauseWorkoutSession(initial, T1);
+  assert.equal(completeWorkoutSetFromDraft(paused, "target-set", T2), paused);
+  const resumed = resumeWorkoutSession(paused, T2);
+  assert.equal(completeWorkoutSetFromDraft(resumed, "target-set", T3).setLogs["target-set"].done, true);
+  const skipped = skipWorkoutSet(initial, "target-set", T1);
+  assert.equal(completeWorkoutSetFromDraft(skipped, "target-set", T2), skipped);
+  const completed = finishWorkoutSession(completeWorkoutSetFromDraft(initial, "target-set", T1), { now: T2 }).session;
+  assert.equal(completeWorkoutSetFromDraft(completed, "target-set", T3), completed);
+  assert.equal(workoutSetDraft(initial, "missing"), null);
+  assert.equal(completeWorkoutSetFromDraft(initial, "missing", T1), initial);
+});
+
+test("undo and reload preserve confirmed actuals instead of reapplying a prescription", () => {
+  const original = sessionWithTarget();
+  const edited = updateWorkoutSet(original, "target-set", { weight: 90, reps: 9, rir: 3 }, T1);
+  const completed = completeWorkoutSetFromDraft(edited, "target-set", T2);
+  const undone = updateWorkoutSet(completed, "target-set", { done: false }, T3);
+  assert.equal(undone.setLogs["target-set"].completedAt, null);
+  assert.equal(undone.setLogs["target-set"].inputEdited, true);
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(undone)), { now: T3 });
+  assert.ok(restored);
+  assert.deepEqual(workoutSetDraft(restored, "target-set"), {
+    id: "target-set", weight: 90, reps: 9, rir: 3, done: false, skipped: false,
+  });
+  assert.equal(validateWorkoutSessionCompletion(restored).productiveSets, 0);
+});
+
+test("done-only legacy updates never invent target values and undo never reapplies them", () => {
+  const original = sessionWithTarget();
+  const legacyDone = updateWorkoutSet(original, "target-set", { done: true }, T1);
+  assert.equal(legacyDone.setLogs["target-set"].weight, 0);
+  assert.equal(legacyDone.setLogs["target-set"].reps, 8);
+  assert.equal(legacyDone.setLogs["target-set"].inputEdited, true);
+  assert.equal(validateWorkoutSessionCompletion(legacyDone).productiveSets, 0);
+  const undone = updateWorkoutSet(legacyDone, "target-set", { done: false }, T2);
+  assert.equal(workoutSetDraft(undone, "target-set").weight, 0);
+  assert.equal(completeWorkoutSetFromDraft(undone, "target-set", T3), undone);
+});
+
+test("legacy normalization distinguishes untouched logs from entered or resolved values", () => {
+  const targetSession = sessionWithTarget();
+  const source = JSON.parse(JSON.stringify(targetSession));
+  delete source.setLogs["target-set"].inputEdited;
+  const untouched = normalizeWorkoutSession(source, { now: T1 });
+  assert.equal(untouched.setLogs["target-set"].inputEdited, false);
+  assert.equal(workoutSetDraft(untouched, "target-set").weight, 105);
+
+  for (const patch of [
+    { weight: 90 },
+    { reps: 9 },
+    { rir: 3 },
+    { done: true },
+    { skipped: true },
+  ]) {
+    const changed = JSON.parse(JSON.stringify(source));
+    Object.assign(changed.setLogs["target-set"], patch);
+    const restored = normalizeWorkoutSession(changed, { now: T1 });
+    assert.equal(restored.setLogs["target-set"].inputEdited, true);
+    assert.equal(workoutSetDraft(restored, "target-set").weight, patch.weight ?? 0);
+  }
+});
+
+test("untouched draft targets survive pause and reload without becoming actuals", () => {
+  const paused = pauseWorkoutSession(sessionWithTarget(), T1);
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(paused)), { now: T2 });
+  assert.ok(restored);
+  assert.equal(restored.status, "paused");
+  assert.equal(restored.setLogs["target-set"].inputEdited, false);
+  assert.equal(restored.setLogs["target-set"].weight, 0);
+  assert.equal(workoutSetDraft(restored, "target-set").weight, 105);
+  assert.equal(validateWorkoutSessionCompletion(restored).productiveSets, 0);
+});
+
+test("new and incompatible replacement sets begin with untouched drafts", () => {
+  const initial = sessionWithTarget();
+  const added = addWorkoutSet(initial, "machine-press", T1, { id: "added-set", recommendedWeight: 95 });
+  assert.equal(added.setLogs["added-set"].inputEdited, false);
+  assert.equal(added.setLogs["added-set"].weight, 0);
+  assert.equal(workoutSetDraft(added, "added-set").weight, 95);
+  const edited = updateWorkoutSet(added, "target-set", { weight: 100 }, T1);
+  const replaced = replaceWorkoutExercise(edited, "machine-press", {
+    exerciseId: "cable-fly", name: "Cable Fly",
+  }, T2, { preserveProgression: false });
+  assert.equal(replaced.setLogs["target-set"].inputEdited, false);
+  assert.equal(workoutSetDraft(replaced, "target-set").weight, 0);
+  assert.equal(workoutSetDraft(replaced, "target-set").done, false);
 });
