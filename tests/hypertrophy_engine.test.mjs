@@ -4,11 +4,14 @@ import test from "node:test";
 import {
   MAX_RECOMMENDED_LOAD_STEP,
   feedbackSetDelta,
+  guardRecommendationForExercisePain,
   guardRecommendationForRecovery,
   isProductiveSet,
   isResolvedSet,
   parseRepRange,
+  previousSetForRecommendation,
   recommendationForSet,
+  resolveExerciseLoadIncrement,
   summarizeWorkoutCompletion,
   targetRirForWeek,
   workoutLiftLogKey,
@@ -103,6 +106,157 @@ test("recommendationForSet caps corrupted load increments", () => {
   assert.equal(result.weight, 200 + MAX_RECOMMENDED_LOAD_STEP);
 });
 
+test("persisted exercise pain blocks load increases without a recovery questionnaire", () => {
+  const last = { weight: 100, reps: 12, rir: 2 };
+  const previous = { sets: [last], topSet: last };
+  const result = recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+    loadProgressionBlocked: true,
+  });
+
+  assert.equal(result.weight, 100);
+  assert.equal(result.rir, 3);
+  assert.match(result.reason, /unresolved pain flag/);
+  assert.deepEqual(previous, { sets: [last], topSet: last });
+  assert.equal(recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5).weight, 105);
+});
+
+test("persisted pain keeps an easier recommendation and a larger effort buffer", () => {
+  const last = { weight: 100, reps: 9, rir: 0 };
+  const previous = { sets: [last], topSet: last };
+  const result = recommendationForSet({ reps: "8-12" }, 0, previous, 4, 5, {
+    loadProgressionBlocked: true,
+  });
+
+  assert.equal(result.weight, 95);
+  assert.equal(result.rir, 4);
+  assert.match(result.reason, /pain flag/);
+});
+
+test("pain with no valid history never fabricates a starter load", () => {
+  const invalid = { weight: 100, reps: 12, rir: 2, skipped: true };
+  for (const previous of [null, { sets: [invalid], topSet: invalid }]) {
+    const result = recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+      loadProgressionBlocked: true,
+    });
+    assert.equal(result.weight, 0);
+    assert.equal(result.reps, 8);
+    assert.equal(result.rir, 3);
+    assert.match(result.reason, /no valid prior load/);
+  }
+});
+
+test("pain guard respects a zero-added-load bodyweight result", () => {
+  const last = { weight: 0, reps: 12, rir: 2 };
+  const result = recommendationForSet({ reps: "8-12" }, 0, { sets: [last], topSet: null }, 2, 5, {
+    allowZeroLoad: true,
+    loadProgressionBlocked: true,
+  });
+
+  assert.equal(result.weight, 0);
+  assert.equal(result.rir, 3);
+  assert.match(result.reason, /Load progression held/);
+});
+
+test("pain guard preserves unconstrained recommendations and fails closed on invalid prior loads", () => {
+  const recommendation = { weight: 105, reps: 8, rir: 2, reason: "Load increased." };
+  assert.equal(guardRecommendationForExercisePain(recommendation, null, false), recommendation);
+  for (const last of [
+    null,
+    { weight: Number.NaN, reps: 12, rir: 2 },
+    { weight: -10, reps: 12, rir: 2 },
+    { weight: 100, reps: 12, rir: 2, skipped: true },
+  ]) {
+    const result = guardRecommendationForExercisePain(recommendation, last, true);
+    assert.equal(result.weight, 0);
+    assert.match(result.reason, /no valid prior load/);
+  }
+});
+
+test("bodyweight history advances reps without being reset to an unassessed load", () => {
+  const last = { weight: 0, reps: 10, rir: 2 };
+  const result = recommendationForSet({ reps: "8-12" }, 0, { sets: [last], topSet: null }, 2, 5, {
+    allowZeroLoad: true,
+  });
+
+  assert.equal(result.weight, 0);
+  assert.equal(result.reps, 11);
+  assert.match(result.reason, /Add reps/);
+  assert.equal(recommendationForSet({ reps: "8-12" }, 0, { sets: [last], topSet: null }, 2, 5).reps, 8);
+});
+
+test("bodyweight progression uses an explicit exercise increment and preserves the upper rep target for reps-only", () => {
+  const last = { weight: 0, reps: 12, rir: 2 };
+  const previous = { sets: [last], topSet: null };
+  const weighted = recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+    allowZeroLoad: true,
+    exerciseLoadIncrement: 2.5,
+  });
+  const repsOnly = recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+    allowZeroLoad: true,
+    exerciseLoadIncrement: 0,
+  });
+
+  assert.equal(weighted.weight, 2.5);
+  assert.equal(weighted.reps, 8);
+  assert.equal(repsOnly.weight, 0);
+  assert.equal(repsOnly.reps, 12);
+  assert.match(repsOnly.reason, /automatic load increases are off/);
+});
+
+test("zero-load history still reduces reps after an effort miss without recommending negative weight", () => {
+  const last = { weight: 0, reps: 10, rir: 0 };
+  const result = recommendationForSet({ reps: "8-12" }, 0, { sets: [last], topSet: null }, 2, 5, {
+    allowZeroLoad: true,
+  });
+  assert.equal(result.weight, 0);
+  assert.equal(result.reps, 9);
+  assert.match(result.reason, /Easier target/);
+});
+
+test("exercise increments override the global increment, including explicit zero, and remain bounded", () => {
+  assert.equal(resolveExerciseLoadIncrement(5), 5);
+  assert.equal(resolveExerciseLoadIncrement(5, null), 5);
+  assert.equal(resolveExerciseLoadIncrement(5, 2.5), 2.5);
+  assert.equal(resolveExerciseLoadIncrement(5, 0), 0);
+  assert.equal(resolveExerciseLoadIncrement(5, 1_000), MAX_RECOMMENDED_LOAD_STEP);
+  for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.equal(resolveExerciseLoadIncrement(5, invalid), 0);
+    assert.equal(resolveExerciseLoadIncrement(invalid), 0);
+  }
+
+  const last = { weight: 100, reps: 12, rir: 2 };
+  const previous = { sets: [last], topSet: last };
+  assert.equal(recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+    exerciseLoadIncrement: 2.5,
+  }).weight, 102.5);
+  const repsOnly = recommendationForSet({ reps: "8-12" }, 0, previous, 2, 5, {
+    exerciseLoadIncrement: 0,
+  });
+  assert.equal(repsOnly.weight, 100);
+  assert.equal(repsOnly.reps, 12);
+});
+
+test("history selection rejects skipped or malformed sets and can reuse valid bodyweight work without a top set", () => {
+  const valid = { weight: 80, reps: 9, rir: 2 };
+  const bodyweight = { weight: 0, reps: 11, rir: 2 };
+  for (const invalid of [
+    { weight: 100, reps: 10, rir: 2, skipped: true },
+    { weight: -1, reps: 10, rir: 2 },
+    { weight: Number.NaN, reps: 10, rir: 2 },
+    { weight: 100, reps: 0, rir: 2 },
+    { weight: 100, reps: Number.NaN, rir: 2 },
+    { weight: 100, reps: 10, rir: Number.NaN },
+    { weight: 100, reps: 10, rir: -1 },
+    { weight: 100, reps: 10, rir: 6 },
+  ]) {
+    assert.equal(previousSetForRecommendation({ sets: [invalid], topSet: valid }, 0), valid);
+    assert.equal(previousSetForRecommendation({ sets: [invalid], topSet: invalid }, 0), null);
+  }
+  assert.equal(previousSetForRecommendation({ sets: [bodyweight], topSet: null }, 3), null);
+  assert.equal(previousSetForRecommendation({ sets: [bodyweight], topSet: null }, 3, { allowZeroLoad: true }), bodyweight);
+  assert.equal(previousSetForRecommendation({ sets: [valid], topSet: null }, Number.NaN), valid);
+});
+
 test("recovery guard blocks load progression and raises the effort buffer", () => {
   const recommendation = { weight: 105, reps: 8, rir: 2, reason: "Load increased." };
   assert.deepEqual(
@@ -122,6 +276,20 @@ test("recovery guard blocks load progression and raises the effort buffer", () =
     guardRecommendationForRecovery(recommendation, { weight: 100, reps: 12, rir: 2 }, { readiness: 4 }),
     recommendation
   );
+});
+
+test("recovery guard blocks added load from bodyweight and refuses an invalid load baseline", () => {
+  const recommendation = { weight: 5, reps: 8, rir: 2, reason: "Load increased." };
+  for (const last of [
+    { weight: 0, reps: 12, rir: 2 },
+    null,
+    { weight: 100, reps: 12, rir: 2, skipped: true },
+    { weight: Number.NaN, reps: 12, rir: 2 },
+  ]) {
+    const result = guardRecommendationForRecovery(recommendation, last, { soreness: 3 });
+    assert.equal(result.weight, 0);
+    assert.equal(result.rir, 3);
+  }
 });
 
 test("feedbackSetDelta gives recovery and pain signals priority", () => {
@@ -164,4 +332,14 @@ test("workout keys isolate the same week and day across mesocycles", () => {
   assert.equal(workoutSessionKey("meso-a", 1, "push"), "meso-a:1:push");
   assert.equal(workoutLiftLogKey("meso-a", 1, "push", "bench"), "meso-a:1:push:bench");
   assert.notEqual(workoutSessionKey("meso-a", 1, "push"), workoutSessionKey("meso-b", 1, "push"));
+});
+
+test("completion accepts zero external load only for explicitly load-optional exercises", () => {
+  const bodyweight = { id: "pull-up", weight: 0, reps: 10, done: true, loadRequired: false };
+  assert.equal(isProductiveSet(bodyweight), true);
+  assert.equal(isProductiveSet({ ...bodyweight, loadRequired: true }), false);
+  assert.equal(isProductiveSet({ ...bodyweight, loadRequired: undefined }), false);
+  assert.equal(isProductiveSet({ ...bodyweight, weight: -1 }), false);
+  assert.equal(isProductiveSet({ ...bodyweight, skipped: true }), false);
+  assert.equal(summarizeWorkoutCompletion([bodyweight]).canComplete, true);
 });

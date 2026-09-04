@@ -65,6 +65,9 @@ import {
 import {
   feedbackSetDelta,
   guardRecommendationForRecovery,
+  guardRecommendationForExercisePain,
+  previousSetForRecommendation,
+  resolveExerciseLoadIncrement,
   recommendationForSet,
   summarizeWorkoutCompletion,
   targetRirForWeek,
@@ -104,6 +107,7 @@ import {
   shouldCancelPendingRestTimerNotification,
 } from "./rest_timer_notifications";
 import { equipmentAllowsExercise } from "./builder_equipment";
+import { exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements } from "./exercise_training_preferences";
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import {
@@ -298,6 +302,7 @@ type AppState = {
   deloadMode: boolean;
   equipment: EquipmentProfile;
   weightIncrement: number;
+  exerciseLoadIncrements: Record<string, number>;
   activeTemplate: MesoTemplateId;
   musclePriorities: Record<MuscleGroup, MusclePriority>;
   muscleFeedback: Record<MuscleGroup, MuscleFeedback>;
@@ -541,6 +546,7 @@ const defaultState: AppState = {
   deloadMode: false,
   equipment: "full-gym",
   weightIncrement: 5,
+  exerciseLoadIncrements: {},
   activeTemplate: "balanced",
   musclePriorities: { ...defaultMusclePriorities },
   muscleFeedback: createDefaultMuscleFeedback(),
@@ -1900,6 +1906,27 @@ const latestHistoryForLift = (history: WorkoutHistoryEntry[], liftItem: WorkoutL
         (!entry.exerciseId && !liftItem.exerciseId && entry.liftId === liftItem.id))
   ) ?? null;
 
+const guardWorkoutRecommendation = (
+  state: AppState, liftItem: WorkoutLift, setIndex: number, sessionKey: string | null,
+  recommendation: SetRecommendation
+): SetRecommendation => {
+  const previousSet = previousSetForRecommendation(latestHistoryForLift(state.workoutHistory, liftItem), setIndex, {
+    allowZeroLoad: liftPermitsZeroLoad(liftItem),
+  });
+  const recovery = Object.values(state.recoveryCheckins).find(checkin =>
+    checkin.sessionKey === sessionKey && checkin.muscleGroup === liftItem.muscleGroup && !checkin.skipped
+  );
+  const recovered = recovery ? guardRecommendationForRecovery(recommendation, previousSet, recovery) : recommendation;
+  return guardRecommendationForExercisePain(recovered, previousSet, hasExercisePainFlag(liftItem, state.painfulExercises));
+};
+
+const recommendWorkoutSet = (
+  state: AppState, liftItem: WorkoutLift, setIndex: number, targetRir: number, sessionKey: string | null
+): SetRecommendation => guardWorkoutRecommendation(state, liftItem, setIndex, sessionKey, recommendationForSet(
+  liftItem, setIndex, latestHistoryForLift(state.workoutHistory, liftItem), targetRir, state.weightIncrement,
+  { allowZeroLoad: liftPermitsZeroLoad(liftItem), exerciseLoadIncrement: state.exerciseLoadIncrements[exercisePreferenceKey(liftItem)] }
+));
+
 const topSetFromSets = (sets: WorkoutSetLog[]): WorkoutSetLog | null => {
   const completed = sets.filter((setItem) => setItem.done && !setItem.skipped && setItem.weight > 0 && setItem.reps > 0);
   if (completed.length === 0) return null;
@@ -2219,6 +2246,7 @@ const loadState = (): AppState => {
       deloadMode: Boolean(parsed.deloadMode),
       equipment: isEquipmentProfile(parsed.equipment) ? parsed.equipment : defaultState.equipment,
       weightIncrement: readClampedNumber(parsed.weightIncrement, defaultState.weightIncrement, 1, 25),
+      exerciseLoadIncrements: normalizeExerciseLoadIncrements(parsed.exerciseLoadIncrements),
       activeTemplate: isMesoTemplateId(parsed.activeTemplate) ? parsed.activeTemplate : defaultState.activeTemplate,
       musclePriorities: normalizeMusclePriorities(parsed.musclePriorities),
       muscleFeedback: normalizeMuscleFeedback(parsed.muscleFeedback),
@@ -3770,6 +3798,7 @@ function TodayView({
   const [showFeedback, setShowFeedback] = useState(false);
   const [showFinishPrompt, setShowFinishPrompt] = useState(false);
   const [showAbandonPrompt, setShowAbandonPrompt] = useState(false);
+  const [editingRecovery, setEditingRecovery] = useState(false);
   const [workoutMessage, setWorkoutMessage] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const [addExerciseMuscle, setAddExerciseMuscle] = useState<MuscleGroup>("chest");
   const [now, setNow] = useState(Date.now());
@@ -3778,6 +3807,7 @@ function TodayView({
     ? workoutSessionKey(state.mesocycleId, state.currentWeek, plannedToday.id)
     : null;
   const activeSession = activeSessionKey ? state.workoutSessions[activeSessionKey] ?? null : null;
+  useEffect(() => setEditingRecovery(false), [activeSessionKey]);
   const workoutIsPaused = activeSession?.status === "paused";
   const otherOpenSession = Object.values(state.workoutSessions).find(
     (session) =>
@@ -3891,13 +3921,7 @@ function TodayView({
               loadRequired: !liftPermitsZeroLoad(next),
               targetRir,
               sets: Array.from({ length: remainingSetCount }, (_, setIndex) => {
-                const recommendation = recommendationForSet(
-                  next,
-                  setIndex,
-                  previous,
-                  targetRir,
-                  prev.weightIncrement
-                );
+                const recommendation = recommendWorkoutSet(prev, next, setIndex, targetRir, sessionKey);
                 return {
                   id: `${replacementSlotId}-set-${setIndex + 1}`,
                   recommendedWeight: recommendation.weight,
@@ -3905,7 +3929,7 @@ function TodayView({
                   recommendationReason: recommendation.reason,
                   reps: next.reps,
                   targetRir: recommendation.rir,
-                  previousResult: previous?.sets[setIndex] ?? previous?.topSet ?? null,
+                  previousResult: previousSetForRecommendation(previous, setIndex, { allowZeroLoad: liftPermitsZeroLoad(next) }),
                 };
               }),
             },
@@ -4077,8 +4101,8 @@ function TodayView({
   const recoveryDraftMuscles =
     missingRecoveryMuscles.length > 0
       ? missingRecoveryMuscles
-      : recoveryStop
-        ? currentRecoveryCheckins.map((checkin) => checkin.muscleGroup)
+      : recoveryStop || editingRecovery
+        ? Array.from(new Set([...relevantRecoveryMuscles, ...currentRecoveryCheckins.map(checkin => checkin.muscleGroup)]))
         : [];
   const recoveryDrafts: RecoveryCheckinDraft[] = recoveryDraftMuscles.map((muscleGroup) => {
     const existing = state.recoveryCheckins[recoveryCheckinKey(activeSessionKey ?? "", muscleGroup)];
@@ -4102,6 +4126,8 @@ function TodayView({
         if (!muscleOptions.includes(draft.muscleGroup as MuscleGroup)) return;
         const muscleGroup = draft.muscleGroup as MuscleGroup;
         const key = recoveryCheckinKey(activeSessionKey, muscleGroup);
+        // Skipping is not a way to erase an already recorded stop constraint.
+        if (skipped && recoveryCheckins[key]?.jointPain >= 4 && !recoveryCheckins[key]?.skipped) return;
         recoveryCheckins[key] = {
           id: key,
           sessionKey: activeSessionKey,
@@ -4116,14 +4142,16 @@ function TodayView({
       });
       return { ...prev, recoveryCheckins };
     });
+    setEditingRecovery(false);
   };
 
   const startWorkout = () => {
-    if (!plannedToday || activeSession || otherOpenSession) return;
+    if (!plannedToday || activeSession || otherOpenSession || recoveryStop || missingRecoveryMuscles.length > 0) return;
     const startedAt = new Date().toISOString();
     setState((prev) => {
       const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, plannedToday.id);
       if (prev.workoutSessions[sessionKey]) return prev;
+      if (Object.values(prev.recoveryCheckins).some(checkin => checkin.sessionKey === sessionKey && !checkin.skipped && checkin.jointPain >= 4)) return prev;
       if (
         Object.values(prev.workoutSessions).some(
           (session) =>
@@ -4159,26 +4187,7 @@ function TodayView({
               loadRequired: !liftPermitsZeroLoad(liftItem),
               targetRir: sessionTargetRir,
               sets: Array.from({ length: Math.max(1, liftItem.sets) }, (_, setIndex) => {
-                const recommendation = recommendationForSet(
-                  liftItem,
-                  setIndex,
-                  previous,
-                  sessionTargetRir,
-                  prev.weightIncrement
-                );
-                const recoveryCheckin = Object.values(prev.recoveryCheckins).find(
-                  (checkin) =>
-                    checkin.sessionKey === sessionKey &&
-                    checkin.muscleGroup === liftItem.muscleGroup &&
-                    !checkin.skipped
-                );
-                const safeRecommendation = recoveryCheckin
-                  ? guardRecommendationForRecovery(
-                      recommendation,
-                      previous?.sets[setIndex] ?? previous?.topSet ?? null,
-                      recoveryCheckin
-                    )
-                  : recommendation;
+                const safeRecommendation = recommendWorkoutSet(prev, liftItem, setIndex, sessionTargetRir, sessionKey);
                 return {
                   id: `${liftItem.id}-set-${setIndex + 1}`,
                   recommendedWeight: safeRecommendation.weight,
@@ -4186,7 +4195,7 @@ function TodayView({
                   recommendationReason: safeRecommendation.reason,
                   reps: liftItem.reps,
                   targetRir: safeRecommendation.rir,
-                  previousResult: previous?.sets[setIndex] ?? previous?.topSet ?? null,
+                  previousResult: previousSetForRecommendation(previous, setIndex, { allowZeroLoad: liftPermitsZeroLoad(liftItem) }),
                 };
               }),
             };
@@ -4228,13 +4237,17 @@ function TodayView({
             {workoutMessage.text}
           </div>
         ) : null}
-        {missingRecoveryMuscles.length > 0 ? (
+        {recoveryDrafts.length > 0 ? (
           <RecoveryCheckinCard
             key={`${activeSessionKey}:${recoveryDrafts.map((item) => item.muscleGroup).join("-")}`}
             items={recoveryDrafts}
             onSave={(drafts) => saveRecoveryCheckins(drafts)}
             onSkip={() => saveRecoveryCheckins(recoveryDrafts, true)}
+            allowSkip={!recoveryStop}
           />
+        ) : null}
+        {currentRecoveryCheckins.length > 0 && recoveryDrafts.length === 0 ? (
+          <Button variant="outline" className="min-h-11 justify-self-start" onClick={() => setEditingRecovery(true)}>Edit readiness check-in</Button>
         ) : null}
         {recoveryRisk ? (
           <div role="status" className="rounded-[18px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-100">
@@ -4243,7 +4256,7 @@ function TodayView({
         ) : null}
         {recoveryStop ? (
           <div role="alert" className="rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-950 dark:border-rose-400/25 dark:bg-rose-400/10 dark:text-rose-100">
-            A stop-level joint score is recorded. Change the affected exercise or update the check-in before starting.
+            A stop-level joint score is recorded. Review and update the affected muscle&apos;s check-in above before starting. Skipping will not clear this flag.
           </div>
         ) : null}
         {otherOpenSession ? (
@@ -4355,22 +4368,16 @@ function TodayView({
       .find((exercise) => exercise.id === liftItem.id)
       ?.prescriptions[setIndex];
     if (!prescription) {
-      return recommendationForSet(
-        liftItem,
-        setIndex,
-        latestHistoryForLift(state.workoutHistory, liftItem),
-        workoutTargetRir,
-        state.weightIncrement
-      );
+      return recommendWorkoutSet(state, liftItem, setIndex, workoutTargetRir, activeSessionKey);
     }
-    return {
+    return guardWorkoutRecommendation(state, liftItem, setIndex, activeSessionKey, {
       weight: prescription.recommendedWeight ?? 0,
       reps: prescription.recommendedReps,
       rir: prescription.targetRir,
       reason: prescription.recommendationReason ?? "Session target saved when the workout started.",
-    };
+    });
   };
-  const allSets = today.lifts.flatMap((liftItem) => getSetsForLift(liftItem));
+  const allSets = today.lifts.flatMap((liftItem) => getSetsForLift(liftItem).map(setItem => ({ ...setItem, loadRequired: !liftPermitsZeroLoad(liftItem) })));
   const completion = summarizeWorkoutCompletion(allSets);
   const completedSets = allSets.filter((setItem) => setItem.done || setItem.skipped).length;
   const productiveSets = allSets.filter((setItem) => setItem.done && !setItem.skipped).length;

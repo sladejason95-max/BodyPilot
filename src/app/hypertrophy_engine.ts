@@ -36,6 +36,15 @@ export type SetRecommendation = {
   reason: string;
 };
 
+export type SetRecommendationOptions = {
+  /** Only exercises that explicitly permit no external load may use zero-load history. */
+  allowZeroLoad?: boolean;
+  /** Persisted exercise feedback is independent of an optional daily recovery check-in. */
+  loadProgressionBlocked?: boolean;
+  /** Zero is an explicit reps-only preference; omission uses the global increment. */
+  exerciseLoadIncrement?: number | null;
+};
+
 export type RecoveryConstraint = {
   soreness?: number;
   readiness?: number;
@@ -54,6 +63,7 @@ export type CompletionSet = {
   reps: number;
   done: boolean;
   skipped?: boolean;
+  loadRequired?: boolean;
 };
 
 export type WorkoutCompletionSummary = {
@@ -103,52 +113,117 @@ const safeLoadStep = (weightIncrement: number) => {
   return Math.min(weightIncrement, MAX_RECOMMENDED_LOAD_STEP);
 };
 
+export const resolveExerciseLoadIncrement = (
+  defaultIncrement: number,
+  exerciseIncrement?: number | null
+) => safeLoadStep(exerciseIncrement ?? defaultIncrement);
+
+const validPreviousSet = (
+  setItem: PreviousSetResult | null | undefined,
+  allowZeroLoad: boolean
+): setItem is PreviousSetResult =>
+  Boolean(
+    setItem &&
+      !setItem.skipped &&
+      Number.isFinite(setItem.weight) &&
+      (allowZeroLoad ? setItem.weight >= 0 : setItem.weight > 0) &&
+      Number.isFinite(setItem.reps) &&
+      setItem.reps > 0 &&
+      Number.isFinite(setItem.rir) &&
+      setItem.rir >= 0 &&
+      setItem.rir <= 5
+  );
+
+/** History must already be scoped to the same exercise by the caller. */
+export const previousSetForRecommendation = (
+  previous: PreviousLiftHistory | null,
+  setIndex: number,
+  options: Pick<SetRecommendationOptions, "allowZeroLoad"> = {}
+): PreviousSetResult | null => {
+  if (!previous) return null;
+  const allowZeroLoad = options.allowZeroLoad === true;
+  const index = Number.isFinite(setIndex) ? Math.max(0, Math.trunc(setIndex)) : 0;
+  const indexedSet = previous.sets[index];
+  if (validPreviousSet(indexedSet, allowZeroLoad)) return indexedSet;
+  if (validPreviousSet(previous.topSet, allowZeroLoad)) return previous.topSet;
+  // Bodyweight histories may not have a top set because their external-load
+  // estimated max is zero. A valid set still records real work.
+  return previous.sets.find((setItem) => validPreviousSet(setItem, allowZeroLoad)) ?? null;
+};
+
+export const guardRecommendationForExercisePain = (
+  recommendation: SetRecommendation,
+  previousSet: PreviousSetResult | null,
+  loadProgressionBlocked: boolean
+): SetRecommendation => {
+  if (!loadProgressionBlocked) return recommendation;
+  const hasPreviousLoad = validPreviousSet(previousSet, true);
+  return {
+    ...recommendation,
+    weight: hasPreviousLoad ? Math.min(recommendation.weight, previousSet.weight) : 0,
+    rir: Math.max(recommendation.rir, 3),
+    reason: hasPreviousLoad
+      ? "Load progression held because this exercise has an unresolved pain flag."
+      : "No load suggested because this exercise has an unresolved pain flag and no valid prior load.",
+  };
+};
+
 export const recommendationForSet = (
   liftItem: RepRangeLift,
   setIndex: number,
   previous: PreviousLiftHistory | null,
   targetRir: number,
-  weightIncrement: number
+  weightIncrement: number,
+  options: SetRecommendationOptions = {}
 ): SetRecommendation => {
   const { low, high } = parseRepRange(liftItem.reps);
-  const indexedSet = previous?.sets[Math.max(0, Math.trunc(setIndex))];
-  const previousSet = indexedSet && !indexedSet.skipped ? indexedSet : previous?.topSet ?? null;
+  const previousSet = previousSetForRecommendation(previous, setIndex, options);
   const safeTargetRir = Number.isFinite(targetRir) ? clamp(targetRir, 0, 5) : 2;
-  const loadStep = safeLoadStep(weightIncrement);
+  const loadStep = resolveExerciseLoadIncrement(weightIncrement, options.exerciseLoadIncrement);
+  const guarded = (recommendation: SetRecommendation) =>
+    guardRecommendationForExercisePain(recommendation, previousSet, options.loadProgressionBlocked === true);
 
-  if (!previousSet || previousSet.weight <= 0 || previousSet.reps <= 0) {
-    return {
+  if (!previousSet) {
+    return guarded({
       weight: 0,
       reps: low,
       rir: safeTargetRir,
       reason: "Pick a load you can control in range.",
-    };
+    });
   }
 
   if (previousSet.rir < safeTargetRir - 0.5) {
-    return {
+    return guarded({
       weight: Math.max(0, previousSet.weight - loadStep),
       reps: Math.max(low, previousSet.reps - 1),
       rir: safeTargetRir,
       reason: "Easier target after missing effort.",
-    };
+    });
   }
 
   if (previousSet.reps >= high && previousSet.rir >= safeTargetRir) {
-    return {
+    if (loadStep === 0) {
+      return guarded({
+        weight: previousSet.weight,
+        reps: high,
+        rir: safeTargetRir,
+        reason: "Keep the top of the rep range; automatic load increases are off.",
+      });
+    }
+    return guarded({
       weight: previousSet.weight + loadStep,
       reps: low,
       rir: safeTargetRir,
       reason: "Load increased after topping the range.",
-    };
+    });
   }
 
-  return {
+  return guarded({
     weight: previousSet.weight,
     reps: Math.min(high, previousSet.reps + 1),
     rir: safeTargetRir,
     reason: "Add reps before increasing load.",
-  };
+  });
 };
 
 export const guardRecommendationForRecovery = (
@@ -163,7 +238,7 @@ export const guardRecommendationForRecovery = (
     jointPain >= 2 || soreness >= 3 || readiness <= 1 || constraint.performanceExpectation === "below";
   if (!constrained) return recommendation;
 
-  const previousWeight = previousSet && previousSet.weight > 0 ? previousSet.weight : recommendation.weight;
+  const previousWeight = validPreviousSet(previousSet, true) ? previousSet.weight : 0;
   return {
     ...recommendation,
     weight: Math.min(recommendation.weight, previousWeight),
@@ -203,7 +278,7 @@ export const isProductiveSet = (setItem: CompletionSet) =>
   setItem.done &&
   !setItem.skipped &&
   Number.isFinite(setItem.weight) &&
-  setItem.weight > 0 &&
+  (setItem.loadRequired === false ? setItem.weight >= 0 : setItem.weight > 0) &&
   Number.isFinite(setItem.reps) &&
   setItem.reps > 0;
 

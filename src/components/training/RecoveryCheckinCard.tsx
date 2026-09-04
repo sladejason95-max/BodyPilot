@@ -19,6 +19,7 @@ type Props = {
   items: RecoveryCheckinDraft[];
   onSave: (items: RecoveryCheckinDraft[]) => void;
   onSkip: () => void;
+  allowSkip?: boolean;
 };
 
 const scaleLabels = {
@@ -68,7 +69,7 @@ function Scale({
   );
 }
 
-export function RecoveryCheckinCard({ items, onSave, onSkip }: Props) {
+export function RecoveryCheckinCard({ items, onSave, onSkip, allowSkip = true }: Props) {
   const [drafts, setDrafts] = useState(() => items.map((item) => ({ ...item })));
   const [expanded, setExpanded] = useState(true);
   const hasJointFlag = drafts.some((item) => item.jointPain >= 2);
@@ -149,7 +150,7 @@ export function RecoveryCheckinCard({ items, onSave, onSkip }: Props) {
             </div>
           ) : null}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="ghost" onClick={onSkip}>Skip for now</Button>
+            {allowSkip && !drafts.some(item => item.jointPain >= 4) ? <Button variant="ghost" onClick={onSkip}>Skip for now</Button> : null}
             <Button className="gap-2" onClick={() => onSave(drafts)}><CheckCircle2 className="h-4 w-4" /> Save readiness</Button>
           </div>
         </div>
