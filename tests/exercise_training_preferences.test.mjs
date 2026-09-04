@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   exerciseHistoryMatches,
+  exercisePermitsZeroLoad,
   exercisePreferenceKey,
   clearExercisePainFlags,
   hasExercisePainFlag,
@@ -9,6 +10,44 @@ import {
   preserveExercisePainOnRename,
   recordExercisePainFlag,
 } from "../src/app/exercise_training_preferences.ts";
+
+test("known bodyweight catalog movements allow zero added load without broad core inference", () => {
+  for (const name of [
+    "Hanging knee raise", "Hanging leg raise", "Captain's chair knee raise",
+    "Reverse crunch", "Ab wheel rollout", "Plank", "Side plank", "Dead bug",
+    "Decline sit-up", "Chin-up", "Assisted triceps dip",
+  ]) {
+    assert.equal(exercisePermitsZeroLoad({ name, pattern: "Hip flexion" }), true, name);
+  }
+  assert.equal(exercisePermitsZeroLoad({ name: "Decline sit-up", pattern: "Loaded flexion" }), true);
+  assert.equal(exercisePermitsZeroLoad({ name: "  HANGING   KNEE RAISE  " }), true);
+  assert.equal(exercisePermitsZeroLoad({ name: "Captain’s chair knee raise" }), true);
+  assert.equal(exercisePermitsZeroLoad({ name: "Decline sit–up" }), true);
+});
+
+test("push-up and pull-up zero-load behavior is preserved for existing variants", () => {
+  for (const name of ["Push-up", "Deficit push-up", "Pull-up", "Neutral-grip pull-up", "Assisted pull-up", "Weighted pull-up", "Push up", "Pull ups"]) {
+    assert.equal(exercisePermitsZeroLoad({ name }), true, name);
+  }
+  assert.equal(exercisePermitsZeroLoad({ name: "Custom movement", pattern: "Bodyweight press" }), true);
+});
+
+test("loaded and unknown movements remain load-required unless explicit metadata says otherwise", () => {
+  for (const name of ["Cable crunch", "Machine crunch", "Weighted dip", "Machine dip", "Pallof press", "Weighted plank", "Dumbbell squat", "Cable pulldown", "Custom core exercise", "Hanging knee raise machine"]) {
+    assert.equal(exercisePermitsZeroLoad({ name, pattern: "Hip flexion" }), false, name);
+  }
+  assert.equal(exercisePermitsZeroLoad({ name: "Weighted core hold", pattern: "Bodyweight" }), false);
+  assert.equal(exercisePermitsZeroLoad({ name: "", pattern: "" }), false);
+});
+
+test("explicit load metadata wins without changing frozen exercise requirements", () => {
+  assert.equal(exercisePermitsZeroLoad({ name: "Hanging knee raise", loadRequired: true }), false);
+  assert.equal(exercisePermitsZeroLoad({ name: "Pull-up", loadRequired: true }), false);
+  assert.equal(exercisePermitsZeroLoad({ name: "Unknown rehab movement", loadRequired: false }), true);
+  const frozen = Object.freeze({ name: "Hanging knee raise", pattern: "Hip flexion", loadRequired: true });
+  assert.equal(exercisePermitsZeroLoad(frozen), false);
+  assert.equal(frozen.loadRequired, true);
+});
 
 test("history never transfers between different explicit exercise IDs even when names and slots match", () => {
   const lift = { exerciseId: "new-machine", name: "Machine Press", id: "same-slot" };

@@ -109,7 +109,7 @@ import {
   shouldCancelPendingRestTimerNotification,
 } from "./rest_timer_notifications";
 import { equipmentAllowsExercise } from "./builder_equipment";
-import { clearExercisePainFlags, exerciseHistoryMatches, exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements, preserveExercisePainOnRename, recordExercisePainFlag } from "./exercise_training_preferences";
+import { clearExercisePainFlags, exerciseHistoryMatches, exercisePermitsZeroLoad, exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements, preserveExercisePainOnRename, recordExercisePainFlag } from "./exercise_training_preferences";
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
@@ -1755,8 +1755,7 @@ const techniqueCuesFor = (liftItem: WorkoutLift) => {
   return cues[liftItem.muscleGroup];
 };
 
-const liftPermitsZeroLoad = (liftItem: WorkoutLift) =>
-  /bodyweight|push-up|pull-up/i.test(`${liftItem.pattern} ${liftItem.name}`);
+const liftPermitsZeroLoad = (liftItem: WorkoutLift) => exercisePermitsZeroLoad(liftItem);
 
 const firstRepTarget = (reps: string) => Number(reps.match(/\d+/)?.[0] ?? 8);
 

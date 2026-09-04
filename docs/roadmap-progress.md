@@ -41,3 +41,11 @@ The audit's claims about likely user preference remain expert judgments. No comp
 Two-tab testing exposed whole-state overwrites from stale tabs, including a development refresh of an older tab. The persistence boundary now compares the exact last-read/saved value before replacing it. A conflict pauses saving and editing in that tab, offers a local JSON copy, and requires explicit reload of the latest saved data. Reset cannot erase the unsaved copy while a conflict is active. Read failures are not treated as an empty store.
 
 Eleven persistence regression tests cover stale writes, identical-content no-ops, deletion/creation conflicts, and read/write failures. Browser verification showed a new food log survives a second tab's stale update and explicit reload. This is not account sync, an import/restore workflow, or a guarantee against truly simultaneous cross-tab transactions: localStorage has no atomic compare-and-swap. Transactional storage or cross-tab locking remains part of R6.
+
+The safeguard was committed and pushed as `8a1f6e7b`, after 156 tests, type checking, and a production build passed from the staged release.
+
+### Bodyweight classification follow-up
+
+Phone-width testing also caught a catalog boundary issue: hanging knee raises were treated as requiring external weight. Exact known bodyweight exercise names now allow zero added load, while unknown and loaded movements keep conservative defaults. Explicit load metadata takes precedence. New sessions use this correction; existing frozen sessions are not silently rewritten. Browser checks confirmed a 0 lb × 10 hanging knee raise records one working set and survives reload; fractional exercise increments also persist.
+
+Final release verification: 160 automated tests, type checking, and the production build passed from the exact staged application snapshot.

@@ -9,6 +9,45 @@ const normalizedText = (value: unknown): string =>
 const exerciseNameSlug = (value: string): string =>
   value.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
+const zeroAddedLoadNames = new Set([
+  "hanging knee raise",
+  "hanging leg raise",
+  "captain's chair knee raise",
+  "reverse crunch",
+  "ab wheel rollout",
+  "plank",
+  "side plank",
+  "dead bug",
+  "decline sit-up",
+  "decline sit up",
+  "chin-up",
+  "chin up",
+  "triceps dip",
+  "bench dip",
+  "assisted triceps dip",
+]);
+
+/**
+ * Zero means no added external load, not an unperformed set. Explicit metadata
+ * wins; otherwise recognize established bodyweight names without guessing from
+ * a broad muscle group or movement pattern such as "Hip flexion".
+ */
+export const exercisePermitsZeroLoad = (
+  exercise: { name: string; pattern?: string; loadRequired?: boolean },
+): boolean => {
+  if (typeof exercise?.loadRequired === "boolean") return !exercise.loadRequired;
+  const name = normalizedText(exercise?.name)
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u2010-\u2015]/g, "-");
+  const pattern = normalizedText(exercise?.pattern);
+  // Preserve the app's existing push-up and pull-up zero-added-load behavior,
+  // including assisted and weighted variants that can also be done unweighted.
+  if (/\b(?:push|pull)[ -]?ups?\b/.test(`${name} ${pattern}`)) return true;
+  if (zeroAddedLoadNames.has(name)) return true;
+  if (/\b(?:weighted|loaded|cable|machine|barbell|dumbbell)\b/.test(name)) return false;
+  return /\bbody[ -]?weight\b/.test(`${name} ${pattern}`);
+};
+
 /** Stable catalog IDs survive renames; custom names retain punctuation to avoid slug collisions. */
 export const exercisePreferenceKey = (lift: ExercisePreferenceIdentity): string => {
   const id = normalizedText(lift?.exerciseId);
