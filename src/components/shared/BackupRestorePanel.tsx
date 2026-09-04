@@ -1,0 +1,312 @@
+import { useEffect, useRef, useState } from "react";
+import { Download, Upload } from "lucide-react";
+import {
+  MAX_LOCAL_BACKUP_BYTES,
+  parseLocalBackup,
+  serializeLocalBackup,
+  type BackupState,
+  type ParsedLocalBackup,
+} from "../../app/local_backup";
+import { Button } from "../ui/button";
+import { Card, CardContent } from "../ui/card";
+
+const download = (content: string, prefix: string) => {
+  const url = URL.createObjectURL(
+    new Blob([content], { type: "application/json" }),
+  );
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${prefix}-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  }
+};
+
+export function BackupRestorePanel({
+  currentState,
+  onRestore,
+  restoreBlockedReason,
+  recoveryCopy,
+}: {
+  currentState: BackupState;
+  onRestore: (raw: BackupState) => { ok: boolean; message?: string };
+  restoreBlockedReason?: string;
+  recoveryCopy?: { content: string; label: string };
+}) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  const readRequest = useRef(0);
+  const [preview, setPreview] = useState<{
+    backup: ParsedLocalBackup;
+    name: string;
+  } | null>(null);
+  const [reading, setReading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [recoveryCopyRequested, setRecoveryCopyRequested] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+
+  // A previously downloaded copy no longer protects edits made after that copy.
+  useEffect(() => {
+    setRecoveryCopyRequested(false);
+    setConfirmed(false);
+  }, [currentState, recoveryCopy?.content]);
+  useEffect(
+    () => () => {
+      readRequest.current += 1;
+    },
+    [],
+  );
+
+  const exportCurrent = (beforeRestore = false) => {
+    try {
+      download(
+        recoveryCopy?.content ?? serializeLocalBackup(currentState),
+        recoveryCopy
+          ? "bodypilot-original-recovery-copy"
+          : beforeRestore
+            ? "bodypilot-before-restore"
+            : "bodypilot-backup",
+      );
+      setError("");
+      setNotice(
+        "Download requested. Check that the JSON file is saved somewhere you can find before relying on this copy.",
+      );
+      if (beforeRestore) setRecoveryCopyRequested(true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "This tab could not create a backup. Your data has not changed.",
+      );
+    }
+  };
+
+  const readFile = async (file: File) => {
+    const request = ++readRequest.current;
+    setPreview(null);
+    setConfirmed(false);
+    setRecoveryCopyRequested(false);
+    setError("");
+    setNotice("");
+    setReading(true);
+    try {
+      if (file.size > MAX_LOCAL_BACKUP_BYTES)
+        throw new Error(
+          "This backup is too large. The maximum supported size is 8 MB.",
+        );
+      const backup = parseLocalBackup(await file.text());
+      if (request === readRequest.current)
+        setPreview({ backup, name: file.name });
+    } catch (cause) {
+      if (request === readRequest.current)
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "This file could not be read. Your current data has not changed.",
+        );
+    } finally {
+      if (request === readRequest.current) setReading(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent className="grid gap-4 p-4 sm:p-5">
+        <div>
+          <h2 className="text-lg font-semibold">Backup & restore</h2>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+            Keep a portable copy of your food, meals, workouts, measurements,
+            split, and settings. Data is saved on this device; this is not cloud
+            sync.
+          </p>
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            Backup files are not encrypted and include personal fitness data.
+            Store them privately. Only restore files you trust.
+          </p>
+          {recoveryCopy ? (
+            <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
+              Saved data could not be loaded. Export keeps its original contents
+              for recovery. {recoveryCopy.label}
+            </p>
+          ) : null}
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button
+            variant="outline"
+            className="min-h-11 gap-2"
+            onClick={() => exportCurrent()}
+          >
+            <Download className="h-4 w-4" aria-hidden="true" />{" "}
+            {recoveryCopy ? "Export original recovery copy" : "Export backup"}
+          </Button>
+          <Button
+            variant="outline"
+            className="min-h-11 gap-2"
+            disabled={reading || Boolean(restoreBlockedReason)}
+            onClick={() => fileInput.current?.click()}
+          >
+            <Upload className="h-4 w-4" aria-hidden="true" />{" "}
+            {reading ? "Reading file…" : "Choose backup to restore"}
+          </Button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept=".json,application/json"
+            className="sr-only"
+            aria-label="Choose BodyPilot backup file"
+            tabIndex={-1}
+            disabled={Boolean(restoreBlockedReason)}
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) void readFile(file);
+            }}
+          />
+        </div>
+        {restoreBlockedReason ? (
+          <p
+            role="alert"
+            className="text-sm text-amber-700 dark:text-amber-200"
+          >
+            {restoreBlockedReason}
+          </p>
+        ) : null}
+        {error ? (
+          <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">
+            {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p
+            role="status"
+            className="text-xs text-slate-600 dark:text-slate-300"
+          >
+            {notice}
+          </p>
+        ) : null}
+        {preview ? (
+          <section
+            aria-label="Backup restore preview"
+            className="grid min-w-0 gap-3 rounded-2xl border border-slate-200 p-4 dark:border-white/10"
+          >
+            <div className="min-w-0">
+              <h3 className="font-semibold">Review before replacing data</h3>
+              <p className="mt-1 break-all text-sm">{preview.name}</p>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                {preview.backup.source === "versioned"
+                  ? `Backup format ${preview.backup.version} · State version 4`
+                  : "Legacy tab copy · State version 4 · Export date unknown"}
+                {preview.backup.exportedAt
+                  ? ` · Exported ${new Date(preview.backup.exportedAt).toLocaleString()}`
+                  : ""}
+              </p>
+            </div>
+            <dl className="grid grid-cols-2 gap-3 text-xs">
+              {preview.backup.counts.map((count) => (
+                <div key={count.label}>
+                  <dt className="text-slate-500 dark:text-slate-400">
+                    {count.label}
+                  </dt>
+                  <dd className="mt-1 text-base font-semibold">
+                    {count.count.toLocaleString()}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="text-sm text-amber-800 dark:text-amber-200">
+              Restoring replaces this device's current data with this file. It
+              does not merge records. Previewing has not changed anything.
+            </p>
+            <Button
+              variant="outline"
+              className="min-h-11 !h-auto whitespace-normal py-2"
+              disabled={Boolean(restoreBlockedReason)}
+              onClick={() => exportCurrent(true)}
+            >
+              {recoveryCopy
+                ? "Download original saved data before restore"
+                : "Download current data before restore"}
+            </Button>
+            <label className="flex min-h-11 items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-1 h-5 w-5 shrink-0"
+                checked={confirmed}
+                disabled={
+                  !recoveryCopyRequested || Boolean(restoreBlockedReason)
+                }
+                onChange={(event) => setConfirmed(event.currentTarget.checked)}
+              />
+              <span>
+                I saved the{" "}
+                {recoveryCopy ? "original recovery" : "current-data"} copy and
+                understand that restoring replaces the data on this device.
+              </span>
+            </label>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button
+                variant="outline"
+                className="min-h-11"
+                onClick={() => {
+                  readRequest.current += 1;
+                  setPreview(null);
+                  setConfirmed(false);
+                  setRecoveryCopyRequested(false);
+                  setError("");
+                }}
+              >
+                Cancel restore
+              </Button>
+              <Button
+                className="min-h-11 !h-auto whitespace-normal bg-rose-700 py-2 text-white hover:bg-rose-800"
+                disabled={
+                  !confirmed ||
+                  !recoveryCopyRequested ||
+                  Boolean(restoreBlockedReason)
+                }
+                onClick={() => {
+                  if (
+                    !confirmed ||
+                    !recoveryCopyRequested ||
+                    restoreBlockedReason
+                  )
+                    return;
+                  try {
+                    const result = onRestore(preview.backup.state);
+                    if (!result.ok) {
+                      setError(
+                        result.message ||
+                          "Restore did not complete. Your current data has not changed.",
+                      );
+                      return;
+                    }
+                    setPreview(null);
+                    setConfirmed(false);
+                    setRecoveryCopyRequested(false);
+                    setError("");
+                    setNotice(
+                      result.message ||
+                        "Backup restored and saved on this device. Keep the pre-restore copy if you need to return to your previous data.",
+                    );
+                  } catch (cause) {
+                    setError(
+                      cause instanceof Error
+                        ? cause.message
+                        : "Restore did not complete. Your current data has not changed.",
+                    );
+                  }
+                }}
+              >
+                Replace data with this backup
+              </Button>
+            </div>
+          </section>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}

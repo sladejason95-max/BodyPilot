@@ -494,14 +494,18 @@ const normalizeSetLog = (
   const raw = asRecord(value) ?? {};
   const skipped = Boolean(raw.skipped);
   const done = Boolean(raw.done) || skipped || Boolean(forceCompletedAt);
+  const recordedUpdatedAt = isoTimestamp(raw.updatedAt);
+  const recordedCompletedAt = isoTimestamp(raw.completedAt);
+  const forcedResolution = Boolean(forceCompletedAt) && !Boolean(raw.done) && !skipped;
+  // Pausing or finishing a session does not mean every earlier set was edited.
+  // Only a newly forced resolution should inherit the session completion time.
   const updatedAt = latestTimestamp(
-    fallbackUpdatedAt,
-    isoTimestamp(raw.updatedAt),
-    isoTimestamp(raw.completedAt),
-    forceCompletedAt
+    recordedUpdatedAt ?? recordedCompletedAt ?? forceCompletedAt ?? fallbackUpdatedAt,
+    recordedCompletedAt,
+    forcedResolution ? forceCompletedAt : null
   );
   const completedAt = done
-    ? isoTimestamp(raw.completedAt) ?? forceCompletedAt ?? updatedAt
+    ? recordedCompletedAt ?? forceCompletedAt ?? updatedAt
     : null;
   const legacyRpe = typeof raw.rpe === "number" ? 10 - raw.rpe : undefined;
   const weight = finiteNumber(raw.weight, 0, 0, MAX_LOAD);

@@ -18,8 +18,8 @@ Validation covers suggested values, partial edits, invalid loads, bodyweight set
 
 ## Remaining work, in order
 
-1. **R5 — Scheduling and priorities:** model each scheduled occurrence separately from a reusable split and a completed workout; make move/skip/resume safe; preview duration tradeoffs without silently removing priority muscles.
-2. **R6 — Recoverability:** establish versioned canonical records and export/restore tests before account-backed synchronization, ownership, retries, and conflict resolution. Current diary and meal persistence is on this device; cross-device restore is not delivered.
+1. **R5 — Scheduling and priorities:** validate the new dated-occurrence and priority-aware preview workflows on real phones; retain separate dates, split templates, and immutable completed workouts.
+2. **R6 — Recoverability:** build transactional persistence before account-backed synchronization, ownership, retries, and conflict resolution. Versioned portable backup/restore is now implemented; automatic cross-device synchronization is not.
 3. **R7 — Explainable suggestions:** return traceable observations, rule version, constraints, data coverage and age, reason, and a hold/adjust action. Track accepting or overriding a plan separately from recording actual work. Pain guardrails are not a substitute for this broader contract.
 4. **R8 — Mobile refinement:** continue reducing competing actions and test keyboard, zoom, dark mode, resume, and save failure on actual phones. Smaller set rows and nearby food search address only part of this work.
 5. **R9 — Cross-domain decisions:** only after sufficient trustworthy longitudinal records; no claims of measured expenditure or physiological precision from default profile values.
@@ -49,3 +49,27 @@ The safeguard was committed and pushed as `8a1f6e7b`, after 156 tests, type chec
 Phone-width testing also caught a catalog boundary issue: hanging knee raises were treated as requiring external weight. Exact known bodyweight exercise names now allow zero added load, while unknown and loaded movements keep conservative defaults. Explicit load metadata takes precedence. New sessions use this correction; existing frozen sessions are not silently rewritten. Browser checks confirmed a 0 lb × 10 hanging knee raise records one working set and survives reload; fractional exercise increments also persist.
 
 Final release verification: 160 automated tests, type checking, and the production build passed from the exact staged application snapshot.
+
+## Next roadmap batch: scheduling, time constraints, and recoverability
+
+### R5 — Dated workouts and honest time tradeoffs
+
+- Workout dates are attached to a mesocycle/week/day occurrence, not to its reusable split or logged set values. Moving one occurrence preserves its identity, frozen targets, actual sets, and other weeks.
+- Training weeks are seven-day windows starting on the selected program date. A Thursday start never invents missed Monday workouts; following weeks advance each occurrence by seven days.
+- Home, Lift, Split, and the weekly schedule use the same dated selection. Active or paused work takes precedence. Finished or skipped workouts are not offered as the next unstarted workout; explicit completed-workout review remains available.
+- Move has a guarded Undo. Moving never earns a completion. Mesocycle completion credits are recorded once per mesocycle, including skip/unskip/re-skip and explicit ending.
+- Short-session generation reserves direct weekly coverage for specialized/emphasized muscles before allocating remaining time. The preview lists omitted exercises and blocks unresolved priorities or infeasible estimates. This guarantees coverage, not an optimal training program or sufficient weekly volume.
+- Estimates use the same adjusted set counts as week-one workouts and are labeled as estimates. Later-week set growth is not falsely promised to fit the week-one time budget.
+
+### R6 — Portable backups and fail-closed recovery
+
+- More includes versioned JSON export and restore with a read-only preview of record counts, format, and export date. Restore replaces rather than merges data, and requires downloading and confirming a pre-restore copy.
+- Files have an 8 MB size limit. They contain personal fitness data and are not encrypted; the UI explicitly advises private storage. Existing schema-4 tab-copy files remain supported.
+- Validation rejects unknown/future formats, malformed records, unsafe keys, and normalization that would drop or change supplied values. Optional new defaults can be added without changing existing records.
+- Restore writes successfully to device storage before replacing visible state. Read errors, write errors, and stale-tab conflicts cannot silently replace the current copy.
+- Unreadable or damaged current-format saves pause editing and autosave. The original raw data remains downloadable for recovery, including legacy-only storage failures; a damaged primary save cannot silently fall back to older data.
+- Real application round-trip tests cover dated and undated foods, saved meals, paused/completed sessions, partial set drafts, safety constraints, 4.5/5 RIR actuals, empty schedules, unchecked flags, and 700-record histories. History is no longer truncated at 480 records. Set timestamps retain the time the set changed, not a later session pause time.
+
+These are local-first improvements, not cloud sync or a guarantee against simultaneous cross-tab transactions. This batch is verified with automated module and real-App integration tests; current browser-control discovery returned no available browser surfaces, so new phone/browser interaction checks are not claimed.
+
+Release gate: 237 automated tests, type checking, and the production build pass from the exact staged roadmap-only snapshot. The live host remains the existing Vercel project; deployment success is checked separately from the push.

@@ -48,6 +48,32 @@ const sessionInput = () => ({
   ],
 });
 
+test("normalization preserves set edit times when a later pause updates the session", () => {
+  let session = startWorkoutSession(sessionInput(), T0);
+  session = updateWorkoutSet(session, "machine-press-set-1", { weight: 60, reps: 8, rir: 3, done: true }, T1);
+  session = pauseWorkoutSession(session, T2);
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(session)), { now: T3 });
+  assert.ok(restored);
+  assert.equal(restored.updatedAt, T2);
+  assert.equal(restored.setLogs["machine-press-set-1"].updatedAt, T1);
+  assert.equal(restored.setLogs["machine-press-set-1"].completedAt, T1);
+  assert.equal(restored.setLogs["machine-press-set-2"].updatedAt, T0);
+  assert.equal(restored.setLogs["machine-press-set-2"].done, false);
+});
+
+test("normalization does not replace earlier completed-set timestamps with workout finish time", () => {
+  let session = startWorkoutSession(sessionInput(), T0);
+  session = updateWorkoutSet(session, "machine-press-set-1", { weight: 60, reps: 8, rir: 3, done: true }, T1);
+  session = finishWorkoutSession(session, { now: T2, skipIncomplete: true }).session;
+  const restored = normalizeWorkoutSession(JSON.parse(JSON.stringify(session)), { now: T3 });
+  assert.ok(restored);
+  assert.equal(restored.completedAt, T2);
+  assert.equal(restored.setLogs["machine-press-set-1"].updatedAt, T1);
+  assert.equal(restored.setLogs["machine-press-set-1"].completedAt, T1);
+  assert.equal(restored.setLogs["machine-press-set-2"].updatedAt, T2);
+  assert.equal(restored.setLogs["machine-press-set-2"].skipped, true);
+});
+
 test("startWorkoutSession creates a stable, frozen prescription snapshot", () => {
   const input = sessionInput();
   const session = startWorkoutSession(input, T0);

@@ -104,16 +104,32 @@ import {
   type WorkoutSession,
 } from "./workout_session";
 import {
+  buildWorkoutOccurrences,
+  creditMesocycleCompletion,
+  isWorkoutDate,
+  moveWorkoutOccurrence,
+  selectNextWorkoutOccurrence,
+  undoWorkoutOccurrenceMove,
+  workoutWeekStartDate,
+  type WorkoutMoveUndo,
+  type WorkoutOccurrence,
+} from "./workout_schedule";
+import {
   cancelRestTimerNotification,
   scheduleRestTimerNotification,
   shouldCancelPendingRestTimerNotification,
 } from "./rest_timer_notifications";
 import { equipmentAllowsExercise } from "./builder_equipment";
+import { constrainSplitDuration, estimatedSplitSessionMinutes } from "./split_constraints";
 import { clearExercisePainFlags, exerciseHistoryMatches, exercisePermitsZeroLoad, exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements, preserveExercisePainOnRename, recordExercisePainFlag } from "./exercise_training_preferences";
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
 import { optimisticWriteLocalState, readLocalState } from "./local_state_persistence";
+import { backupNormalizationChanges, validateBackupState, type BackupState } from "./local_backup";
+import { loadAppStateSafely } from "./app_state_storage";
+import { BackupRestorePanel } from "@/components/shared/BackupRestorePanel";
+import { normalizeCompletedMesocycleIds, normalizeWorkoutDateOverrides, type WorkoutDateOverrides } from "./workout_schedule";
 import {
   bodyweightLocalDateKey,
   mergeBodyweightHistory,
@@ -288,6 +304,7 @@ type AppState = {
   workoutPaused: boolean;
   activeDayId: string | null;
   skippedWorkouts: Record<string, boolean>;
+  workoutDateOverrides: WorkoutDateOverrides;
   scheduleItems: ScheduleItem[];
   scheduleCheckoffs: Record<string, boolean>;
   selectedScheduleDay: WeekdayId;
@@ -299,6 +316,7 @@ type AppState = {
   customExercises: ExerciseOption[];
   mesoPaused: boolean;
   completedMesoCount: number;
+  completedMesoIds: string[];
   mesocycleId: string;
   mesoStartedAt: string;
   lastMesoCompletedAt: string | null;
@@ -506,7 +524,7 @@ const createDefaultMuscleFeedback = (): Record<MuscleGroup, MuscleFeedback> => (
 const mesocycleIdForStart = (startedAt: string) => `meso-${startedAt.replace(/[^a-z0-9]/gi, "")}`;
 const defaultMesoStartedAt = new Date().toISOString();
 
-const defaultState: AppState = {
+export const defaultState: AppState = {
   schemaVersion: 4,
   theme: "dark",
   goal: "recomposition",
@@ -533,6 +551,7 @@ const defaultState: AppState = {
   workoutPaused: false,
   activeDayId: null,
   skippedWorkouts: {},
+  workoutDateOverrides: {},
   scheduleItems: defaultScheduleItems.map((item) => ({ ...item })),
   scheduleCheckoffs: {},
   selectedScheduleDay: "mon",
@@ -544,6 +563,7 @@ const defaultState: AppState = {
   customExercises: [],
   mesoPaused: false,
   completedMesoCount: 0,
+  completedMesoIds: [],
   mesocycleId: mesocycleIdForStart(defaultMesoStartedAt),
   mesoStartedAt: defaultMesoStartedAt,
   lastMesoCompletedAt: null,
@@ -1272,12 +1292,9 @@ const generatedSplitFor = (sessionsPerWeek: number): SplitModel => {
 };
 
 const estimatedSessionMinutesFor = (lifts: ReadonlyArray<Pick<WorkoutLift, "sets">>) =>
-  Math.max(
-    15,
-    Math.round(8 + lifts.length * 3 + lifts.reduce((total, liftItem) => total + Math.max(1, liftItem.sets), 0) * 1.5)
-  );
+  estimatedSplitSessionMinutes(lifts.map((liftItem) => liftItem.sets));
 
-const splitFromBuilderDraft = (draft: MesocycleBuilderDraft): SplitDay[] => {
+export const splitFromBuilderDraft = (draft: MesocycleBuilderDraft, state: AppState) => {
   const weekdayLabels: Record<WeekdayId, string> = {
     mon: "Mon",
     tue: "Tue",
@@ -1300,7 +1317,7 @@ const splitFromBuilderDraft = (draft: MesocycleBuilderDraft): SplitDay[] => {
   const favoriteNames = new Set(draft.favoriteExercises.map((name) => name.toLowerCase()));
   const restrictedNames = new Set(draft.restrictedExercises.map((name) => name.toLowerCase()));
 
-  return generatedSplitFor(draft.sessionsPerWeek).days.slice(0, draft.sessionsPerWeek).map((day, dayIndex) => {
+  const eligibleDays = generatedSplitFor(draft.sessionsPerWeek).days.slice(0, draft.sessionsPerWeek).map((day, dayIndex) => {
     const used = new Set<string>();
     const eligibleLifts = day.lifts
       .filter((liftItem) => draft.musclePriorities[liftItem.muscleGroup] !== "exclude")
@@ -1352,18 +1369,23 @@ const splitFromBuilderDraft = (draft: MesocycleBuilderDraft): SplitDay[] => {
         used.add(next.name.toLowerCase());
         return [next];
       });
-    const lifts = eligibleLifts.reduce<WorkoutLift[]>((selected, liftItem) => {
-      const candidate = [...selected, liftItem];
-      return selected.length === 0 || estimatedSessionMinutesFor(candidate) <= draft.sessionMinutes
-        ? candidate
-        : selected;
-    }, []);
-
     return {
       ...day,
       day: weekdayLabels[draft.availableTrainingDays[dayIndex] ?? draft.availableTrainingDays[0] ?? "mon"],
-      lifts,
+      lifts: eligibleLifts,
     };
+  });
+  return constrainSplitDuration({
+    days: eligibleDays,
+    sessionMinutes: draft.sessionMinutes,
+    musclePriorities: draft.musclePriorities,
+    effectiveSetCount: (liftItem) => mesoAdjustedSetCount(liftItem, {
+      musclePriorities: draft.musclePriorities,
+      muscleFeedback: state.muscleFeedback,
+      currentWeek: 1,
+      mesoLengthWeeks: draft.mesoLengthWeeks,
+      deloadMode: false,
+    }),
   });
 };
 
@@ -1430,7 +1452,7 @@ const normalizeMusclePriorities = (priorities: unknown): Record<MuscleGroup, Mus
 const normalizeSkippedWorkouts = (value: unknown, mesocycleId: string): Record<string, boolean> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.entries(value as Record<string, unknown>).reduce<Record<string, boolean>>((acc, [key, skipped]) => {
-    if (skipped) acc[key.split(":").length === 2 ? `${mesocycleId}:${key}` : key] = true;
+    if (typeof skipped === "boolean") acc[key.split(":").length === 2 ? `${mesocycleId}:${key}` : key] = skipped;
     return acc;
   }, {});
 };
@@ -1461,13 +1483,13 @@ const normalizeScheduleItems = (items: unknown): ScheduleItem[] => {
     })
     .filter(Boolean) as ScheduleItem[];
 
-  return normalized.length > 0 ? sortScheduleItems(normalized) : defaultScheduleItems.map((item) => ({ ...item }));
+  return normalized;
 };
 
 const normalizeScheduleCheckoffs = (value: unknown): Record<string, boolean> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.entries(value as Record<string, unknown>).reduce<Record<string, boolean>>((acc, [key, checked]) => {
-    if (checked) acc[key] = true;
+    if (typeof checked === "boolean") acc[key] = checked;
     return acc;
   }, {});
 };
@@ -1590,14 +1612,14 @@ const normalizeWorkoutLog = (logs: unknown): Record<string, WorkoutSetLog[]> => 
           rir: clamp(
             Number(raw.rir ?? (typeof (raw as Partial<WorkoutSetLog> & { rpe?: number }).rpe === "number" ? 10 - (raw as { rpe: number }).rpe : 2)),
             0,
-            4
+            5
           ),
           done: Boolean(raw.done),
           skipped: Boolean(raw.skipped),
         } satisfies WorkoutSetLog;
       })
       .filter(Boolean) as WorkoutSetLog[];
-    if (normalized.length > 0) acc[liftId] = normalized;
+    acc[liftId] = normalized;
     return acc;
   }, {});
 };
@@ -1618,7 +1640,7 @@ const normalizeWorkoutHistory = (history: unknown, fallbackMesocycleId: string):
               return {
                 weight: Number(rawSet.weight || 0),
                 reps: Number(rawSet.reps || 0),
-                rir: clamp(Number(rawSet.rir ?? 2), 0, 4),
+                rir: clamp(Number(rawSet.rir ?? 2), 0, 5),
                 skipped: Boolean(rawSet.skipped),
               } satisfies WorkoutHistorySet;
             })
@@ -1628,7 +1650,7 @@ const normalizeWorkoutHistory = (history: unknown, fallbackMesocycleId: string):
         ? {
             weight: Number(raw.topSet.weight || 0),
             reps: Number(raw.topSet.reps || 0),
-            rir: clamp(Number(raw.topSet.rir ?? 2), 0, 4),
+            rir: clamp(Number(raw.topSet.rir ?? 2), 0, 5),
             skipped: Boolean(raw.topSet.skipped),
           }
         : null;
@@ -1780,20 +1802,65 @@ const savedSetsForLift = (
   logs[`${weekNumber}:${dayId}:${liftId}`] ??
   logs[liftId];
 
-const activeSplitDay = (split: SplitDay[], activeDayId: string | null) => {
-  if (split.length === 0) return null;
-  if (activeDayId) {
-    const selected = split.find((day) => day.id === activeDayId);
-    if (selected) return selected;
-  }
-  const dayName = new Date().toLocaleDateString(undefined, { weekday: "short" });
-  return split.find((day) => day.day.toLowerCase().startsWith(dayName.toLowerCase())) ?? split[0];
+export const workoutOccurrencesForWeek = (state: AppState, days: SplitDay[], week = state.currentWeek) =>
+  buildWorkoutOccurrences({
+    mesocycleId: state.mesocycleId,
+    weekNumber: week,
+    days,
+    weekStartDate: workoutWeekStartDate(localDateKey(new Date(state.mesoStartedAt)), week),
+    dateOverrides: state.workoutDateOverrides,
+  });
+
+const allCompletedWorkoutKeys = (state: AppState) => new Set([
+  ...state.workoutHistory.map(entry => entry.sessionKey),
+  ...Object.values(state.workoutSessions).filter(session => session.status === "completed").map(session => session.sessionKey),
+]);
+
+export const nextWorkoutFor = (state: AppState, days: SplitDay[], allowExplicitReview = false) => {
+  const occurrences = workoutOccurrencesForWeek(state, days);
+  const completedKeys = allCompletedWorkoutKeys(state);
+  const next = selectNextWorkoutOccurrence({
+    mesocycleId: state.mesocycleId, occurrences, sessions: Object.values(state.workoutSessions),
+    completedSessionKeys: completedKeys, skippedWorkouts: state.skippedWorkouts,
+    today: localDateKey(new Date()), preferredDayId: state.activeDayId,
+  });
+  const explicit = allowExplicitReview && state.activeDayId
+    ? occurrences.find(item => item.dayId === state.activeDayId && completedKeys.has(item.sessionKey))
+    : null;
+  if (next.kind !== "resume" && explicit) return {
+    kind: "review" as const, occurrence: explicit, session: state.workoutSessions[explicit.sessionKey] ?? null,
+  };
+  return next;
+};
+
+const splitDayFromSession = (session: WorkoutSession, planned?: SplitDay | null): SplitDay => ({
+  id: session.dayId, day: session.dayLabel, focus: session.workoutName,
+  intent: planned?.intent ?? "Follow the frozen prescription saved when this workout started.",
+  lifts: session.exercises.map(exercise => {
+    const first = exercise.prescriptions[0];
+    const low = first?.repRange.low ?? 8;
+    const high = first?.repRange.high ?? low;
+    return { id: exercise.id, exerciseId: exercise.exerciseId, name: exercise.name,
+      muscleGroup: muscleOptions.includes(exercise.muscleGroup as MuscleGroup) ? exercise.muscleGroup as MuscleGroup : "chest",
+      pattern: exercise.pattern, target: exercise.target, sets: exercise.prescriptions.length,
+      reps: low === high ? `${low}` : `${low}-${high}` };
+  }),
+});
+
+const activeSplitDay = (split: SplitDay[], activeDayId: string | null, state?: AppState) => {
+  if (!state) return split.find(day => day.id === activeDayId) ?? split[0] ?? null;
+  const next = nextWorkoutFor(state, split);
+  const planned = split.find(day => day.id === next.occurrence?.dayId) ?? null;
+  return next.kind === "resume" ? splitDayFromSession(next.session, planned) : planned;
 };
 
 const openWorkoutSessionForMesocycle = (
   sessions: Record<string, WorkoutSession>,
   mesocycleId: string
-) => Object.values(sessions).find((session) => session.mesocycleId === mesocycleId && session.status !== "completed") ?? null;
+) => {
+  const next = selectNextWorkoutOccurrence({ mesocycleId, occurrences: [], sessions: Object.values(sessions), today: "" });
+  return next.kind === "resume" ? next.session : null;
+};
 
 const plannedSessionKeysForWeek = (days: SplitDay[], mesocycleId: string, weekNumber: number) =>
   new Set(days.map((day) => workoutSessionKey(mesocycleId, weekNumber, day.id)));
@@ -2039,28 +2106,32 @@ const weeklySetTargetsFor = (days: SplitDay[]) =>
     { chest: 0, back: 0, quads: 0, hamstrings: 0, shoulders: 0, arms: 0, glutes: 0, core: 0 }
   );
 
-const applyMesoSettings = (split: SplitModel, state: AppState, targetRir: number): SplitModel => {
-  const isDeload = state.deloadMode;
+const mesoAdjustedSetCount = (
+  liftItem: WorkoutLift,
+  state: Pick<AppState, "deloadMode" | "mesoLengthWeeks" | "currentWeek" | "musclePriorities" | "muscleFeedback">
+) => {
+  const priority = state.musclePriorities[liftItem.muscleGroup] ?? "grow";
+  const feedback = state.muscleFeedback[liftItem.muscleGroup] ?? createDefaultMuscleFeedback()[liftItem.muscleGroup];
   const midpointWeek = Math.ceil(state.mesoLengthWeeks / 2);
+  const weekDelta =
+    !state.deloadMode && (priority === "specialize" || priority === "emphasize") && state.currentWeek >= midpointWeek
+      ? 1
+      : 0;
+  return state.deloadMode
+    ? Math.max(1, Math.ceil(liftItem.sets * 0.55))
+    : clamp(liftItem.sets + prioritySetDelta[priority] + feedbackSetDelta(feedback) + weekDelta, 1, priority === "specialize" ? 7 : 6);
+};
+
+export const applyMesoSettings = (split: SplitModel, state: AppState, targetRir: number): SplitModel => {
+  const isDeload = state.deloadMode;
   const days = split.days.map((day) => ({
     ...day,
     lifts: day.lifts
       .filter((liftItem) => state.musclePriorities[liftItem.muscleGroup] !== "exclude")
       .map((liftItem) => {
-        const priority = state.musclePriorities[liftItem.muscleGroup] ?? "grow";
-        const feedback = state.muscleFeedback[liftItem.muscleGroup] ?? createDefaultMuscleFeedback()[liftItem.muscleGroup];
-        const priorityDelta = prioritySetDelta[priority];
-        const weekDelta =
-          !isDeload && (priority === "specialize" || priority === "emphasize") && state.currentWeek >= midpointWeek
-            ? 1
-            : 0;
-        const adjustedSets = isDeload
-          ? Math.max(1, Math.ceil(liftItem.sets * 0.55))
-          : clamp(liftItem.sets + priorityDelta + feedbackSetDelta(feedback) + weekDelta, 1, priority === "specialize" ? 7 : 6);
-
         return {
           ...liftItem,
-          sets: adjustedSets,
+          sets: mesoAdjustedSetCount(liftItem, state),
           reps: isDeload ? "10-15" : liftItem.reps,
         };
       }),
@@ -2163,23 +2234,7 @@ const foodNutrientTargetsFor = (state: AppState, model: PlanModel): FoodNutrient
 const formatNutrientAmount = (value: number, unit: string, precision = 0) =>
   `${precision > 0 ? value.toFixed(precision) : formatNumber(Math.round(value))}${unit}`;
 
-const loadState = (): AppState => {
-  if (typeof window === "undefined") return defaultState;
-
-  try {
-    const storedPayloads = [STORAGE_KEY, ...LEGACY_STORAGE_KEYS].flatMap((key) => {
-      const saved = window.localStorage.getItem(key);
-      if (!saved) return [];
-      try {
-        const value = JSON.parse(saved);
-        return value && typeof value === "object" && !Array.isArray(value) ? [value as Record<string, unknown>] : [];
-      } catch {
-        return [];
-      }
-    });
-    const parsed = storedPayloads[0];
-    if (!parsed) return defaultState;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return defaultState;
+export const normalizeAppState = (parsed: Record<string, unknown>, storedPayloads: Record<string, unknown>[] = [parsed]): AppState => {
     const mesoLengthWeeks = Math.round(readClampedNumber(parsed.mesoLengthWeeks, defaultState.mesoLengthWeeks, 3, 8));
     const currentWeek = Math.round(readClampedNumber(parsed.currentWeek, defaultState.currentWeek, 1, mesoLengthWeeks));
     const goal = isGoal(parsed.goal) ? parsed.goal : isGoal(parsed.goalFocus) ? parsed.goalFocus : defaultState.goal;
@@ -2198,7 +2253,7 @@ const loadState = (): AppState => {
       : undefined;
     const currentHistory = normalizeWorkoutHistory(parsed.workoutHistory, mesocycleId);
     const migratedHistory = migrateLegacyTrackerDays(legacyTrackerDays, mesocycleId, mesoStartedAt, exerciseLibrary);
-    const workoutHistory = mergeHistoryWithoutDuplicates(currentHistory, migratedHistory).slice(0, 480);
+    const workoutHistory = mergeHistoryWithoutDuplicates(currentHistory, migratedHistory);
     const bodyWeightHistory = mergeBodyweightHistory(
       normalizeBodyweightHistory(parsed.bodyWeightHistory),
       migrateLegacyTrackerBodyweights(legacyTrackerDays)
@@ -2249,6 +2304,7 @@ const loadState = (): AppState => {
       workoutPaused: Boolean(parsed.workoutPaused),
       activeDayId,
       skippedWorkouts: normalizeSkippedWorkouts(parsed.skippedWorkouts, mesocycleId),
+      workoutDateOverrides: normalizeWorkoutDateOverrides(parsed.workoutDateOverrides),
       scheduleItems: normalizeScheduleItems(parsed.scheduleItems ?? parsed.weekSchedule ?? parsed.schedule),
       scheduleCheckoffs: normalizeScheduleCheckoffs(parsed.scheduleCheckoffs),
       selectedScheduleDay: isWeekdayId(parsed.selectedScheduleDay) ? parsed.selectedScheduleDay : defaultState.selectedScheduleDay,
@@ -2259,7 +2315,11 @@ const loadState = (): AppState => {
       painfulExercises: normalizeStringList(parsed.painfulExercises),
       customExercises: normalizeCustomExercises(parsed.customExercises),
       mesoPaused: Boolean(parsed.mesoPaused),
-      completedMesoCount: Math.round(readClampedNumber(parsed.completedMesoCount, 0, 0, 999)),
+      completedMesoCount: Math.round(readClampedNumber(parsed.completedMesoCount, 0, 0, Number.MAX_SAFE_INTEGER)),
+      completedMesoIds: normalizeCompletedMesocycleIds(parsed.completedMesoIds ?? (
+        Number(parsed.completedMesoCount) > 0 && typeof parsed.lastMesoCompletedAt === "string"
+          ? [mesocycleId] : []
+      )),
       mesocycleId,
       mesoStartedAt,
       lastMesoCompletedAt:
@@ -2275,15 +2335,34 @@ const loadState = (): AppState => {
       muscleFeedback: normalizeMuscleFeedback(parsed.muscleFeedback),
       customSplit,
     };
-  } catch {
-    return defaultState;
+};
+
+/** Current canonical data is never repaired destructively during an automatic load. */
+export const normalizeSavedAppState = (parsed: BackupState, payloads: BackupState[] = [parsed]): AppState => {
+  if (parsed.schemaVersion === 4 && parsed.foodDiaryVersion !== undefined && parsed.foodDiaryVersion !== 1) {
+    throw new Error("Saved food records use an unsupported version. Update the app before opening them.");
   }
+  const normalized = normalizeAppState(parsed, payloads);
+  if (parsed.schemaVersion === 4 && parsed.foodDiaryVersion === 1) {
+    validateBackupState(parsed);
+    const changed = backupNormalizationChanges(parsed, normalized as unknown as BackupState);
+    if (changed.length) {
+      throw new Error(`Saved ${changed.slice(0, 3).join(", ")} records need recovery. The original data has been kept unchanged.`);
+    }
+  }
+  return normalized;
 };
 
 const initialView = (): ViewId => {
   if (typeof window === "undefined") return "home";
   const value = window.location.hash.replace("#", "");
   return viewItems.some((item) => item.id === value) ? (value as ViewId) : "home";
+};
+
+export const builderStartTimestamp = (startDate: string): string | null => {
+  if (!isWorkoutDate(startDate)) return null;
+  const date = new Date(`${startDate}T12:00:00`);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 };
 
 const readinessTone = (score: number) => {
@@ -2304,7 +2383,7 @@ const toneClass: Record<Suggestion["tone"], string> = {
     "border-violet-200 bg-violet-50 text-violet-900 dark:border-violet-400/20 dark:bg-violet-400/10 dark:text-violet-100",
 };
 
-const computePlan = (savedState: AppState, diaryDate: string): PlanModel => {
+export const computePlan = (savedState: AppState, diaryDate: string): PlanModel => {
   const intake = foodDiaryTotals(savedState.foodLog, diaryDate);
   // Food advice and the diary share one source of truth: entries for this local day.
   const state = { ...savedState, caloriesLogged: intake.calories, proteinLogged: intake.protein, carbsLogged: intake.carbs, fatsLogged: intake.fat };
@@ -3119,6 +3198,7 @@ function WeeklyScheduler({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   goTo: (view: ViewId) => void;
 }) {
+  const { onMoved, moveNotice } = useWorkoutMoveNotice(state, setState);
   const [draft, setDraft] = useState({
     day: state.selectedScheduleDay,
     type: "meal" as ScheduleItemType,
@@ -3128,12 +3208,33 @@ function WeeklyScheduler({
     linkedDayId: model.split.days[0]?.id ?? "",
   });
   const weekStart = useMemo(() => startOfCurrentWeek(), []);
+  const datedWorkouts = Array.from({ length: state.mesoLengthWeeks }, (_, index) =>
+    workoutOccurrencesForWeek(state, model.split.days, index + 1)).flat();
+  const completedWorkoutKeys = allCompletedWorkoutKeys(state);
+  const datedWorkoutFor = (item: ScheduleItem) => item.id.startsWith("workout-occurrence:")
+    ? datedWorkouts.find(occurrence => occurrence.sessionKey === item.id.slice("workout-occurrence:".length)) ?? null
+    : null;
+  const itemsForDate = (weekday: WeekdayId, dateKey: string): ScheduleItem[] => [
+    ...state.scheduleItems.filter(item => item.type !== "workout" && item.day === weekday),
+    ...datedWorkouts.filter(occurrence => occurrence.scheduledDate === dateKey).flatMap(occurrence => {
+      const day = model.split.days.find(item => item.id === occurrence.dayId);
+      if (!day) return [];
+      const saved = state.scheduleItems.find(item => item.type === "workout" && item.linkedDayId === day.id);
+      return [{ id: `workout-occurrence:${occurrence.sessionKey}`, day: weekday, time: saved?.time ?? "17:30",
+        type: "workout" as ScheduleItemType, title: day.focus, detail: dayMuscleSummary(day), linkedDayId: day.id }];
+    }),
+  ];
+  const itemIsDone = (item: ScheduleItem, dateKey: string) => {
+    const occurrence = datedWorkoutFor(item);
+    return occurrence ? completedWorkoutKeys.has(occurrence.sessionKey)
+      : Boolean(state.scheduleCheckoffs[scheduleCheckoffKey(dateKey, item.id)]);
+  };
   const workoutOptions = model.split.days.map((day) => ({ value: day.id, label: `${day.day} - ${day.focus}` }));
   const weekDays = weekdayOptions.map((option) => {
     const date = dateForWeekday(weekStart, option.value);
     const dateKey = localDateKey(date);
-    const items = state.scheduleItems.filter((item) => item.day === option.value);
-    const done = items.filter((item) => state.scheduleCheckoffs[scheduleCheckoffKey(dateKey, item.id)]).length;
+    const items = itemsForDate(option.value, dateKey);
+    const done = items.filter((item) => itemIsDone(item, dateKey)).length;
     return {
       ...option,
       date,
@@ -3144,13 +3245,13 @@ function WeeklyScheduler({
     };
   });
   const selectedDay = weekDays.find((day) => day.value === state.selectedScheduleDay) ?? weekDays[0];
-  const selectedItems = sortScheduleItems(state.scheduleItems.filter((item) => item.day === selectedDay.value));
+  const selectedItems = sortScheduleItems(selectedDay.items);
   const weekTotal = weekDays.reduce((sum, day) => sum + day.total, 0);
   const weekDone = weekDays.reduce((sum, day) => sum + day.done, 0);
   const weekProgress = weekTotal > 0 ? Math.round((weekDone / weekTotal) * 100) : 0;
   const nextOpen = weekDays
     .flatMap((day) => sortScheduleItems(day.items).map((item) => ({ day, item })))
-    .find(({ day, item }) => !state.scheduleCheckoffs[scheduleCheckoffKey(day.dateKey, item.id)]);
+    .find(({ day, item }) => !itemIsDone(item, day.dateKey) && !state.skippedWorkouts[datedWorkoutFor(item)?.sessionKey ?? ""]);
   const openMesoSession = openWorkoutSessionForMesocycle(state.workoutSessions, state.mesocycleId);
 
   const selectDay = (day: WeekdayId) => {
@@ -3177,28 +3278,14 @@ function WeeklyScheduler({
   };
 
   const moveWorkoutItemToDay = (item: ScheduleItem, day: WeekdayId) => {
-    if (day === item.day) return;
+    const occurrence = datedWorkoutFor(item);
+    if (!occurrence) return;
     const targetDay = weekDays.find((option) => option.value === day);
     if (!targetDay) return;
-    const sourceCheckoffKey = scheduleCheckoffKey(selectedDay.dateKey, item.id);
-    const targetCheckoffKey = scheduleCheckoffKey(targetDay.dateKey, item.id);
-
     setState((prev) => {
-      const scheduleCheckoffs = { ...prev.scheduleCheckoffs };
-      if (scheduleCheckoffs[sourceCheckoffKey]) {
-        delete scheduleCheckoffs[sourceCheckoffKey];
-        scheduleCheckoffs[targetCheckoffKey] = true;
-      }
-      return {
-        ...prev,
-        selectedScheduleDay: day,
-        scheduleItems: sortScheduleItems(
-          prev.scheduleItems.map((scheduleItem) =>
-            scheduleItem.id === item.id ? { ...scheduleItem, day } : scheduleItem
-          )
-        ),
-        scheduleCheckoffs,
-      };
+      const result = moveWorkoutOccurrence({ occurrence, dateOverrides: prev.workoutDateOverrides,
+        targetDate: targetDay.dateKey, completedSessionKeys: allCompletedWorkoutKeys(prev), skippedWorkouts: prev.skippedWorkouts });
+      return result.changed ? { ...prev, selectedScheduleDay: day, activeDayId: null, workoutDateOverrides: { ...result.dateOverrides } } : prev;
     });
     setDraft((prev) => ({ ...prev, day }));
   };
@@ -3244,7 +3331,10 @@ function WeeklyScheduler({
     }
     const linked = linkedWorkoutFor(item);
     if (!linked) return;
-    setState((prev) => ({ ...prev, activeDayId: linked.id, mesoPaused: false }));
+    const occurrence = datedWorkoutFor(item);
+    if (!occurrence || state.skippedWorkouts[occurrence.sessionKey]) return;
+    setState((prev) => ({ ...prev, currentWeek: occurrence.weekNumber, activeDayId: linked.id,
+      deloadMode: occurrence.weekNumber >= prev.mesoLengthWeeks, mesoPaused: false }));
     goTo("today");
   };
 
@@ -3318,15 +3408,13 @@ function WeeklyScheduler({
               {weekDone}/{weekTotal} items complete this week
               {nextOpen ? ` · next open: ${formatScheduleTime(nextOpen.item.time)} ${nextOpen.item.title}` : ""}
             </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Workout dates come from your split and one-time moves. Only saved workouts count complete; reminder checkoffs do not log training.</p>
+            <div className="mt-3">{moveNotice}</div>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" size="sm" className="gap-2" onClick={syncSplitWorkouts}>
-              <CalendarDays className="h-4 w-4" />
-              Sync workouts
-            </Button>
             <Button variant="ghost" size="sm" className="gap-2" onClick={clearWeek}>
               <RotateCcw className="h-4 w-4" />
-              Clear week
+              Clear reminder checkoffs
             </Button>
           </div>
         </div>
@@ -3344,7 +3432,7 @@ function WeeklyScheduler({
                 {weekDone} done
               </div>
               <div className="rounded-[16px] border border-slate-200 bg-white/70 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                {Math.max(0, weekTotal - weekDone)} open
+                {Math.max(0, weekTotal - weekDone)} not completed
               </div>
             </div>
           </div>
@@ -3380,9 +3468,27 @@ function WeeklyScheduler({
         <div className="grid gap-3">
           {selectedItems.length > 0 ? (
             selectedItems.map((item) => {
-              const done = Boolean(state.scheduleCheckoffs[scheduleCheckoffKey(selectedDay.dateKey, item.id)]);
+              const done = itemIsDone(item, selectedDay.dateKey);
               const Icon = scheduleTypeIcons[item.type];
               const linkedWorkout = item.type === "workout" ? linkedWorkoutFor(item) : null;
+              const occurrence = datedWorkoutFor(item);
+              if (occurrence) {
+                const skipped = !done && Boolean(state.skippedWorkouts[occurrence.sessionKey]);
+                const open = state.workoutSessions[occurrence.sessionKey]?.status;
+                return <section key={item.id} className="rounded-[24px] border border-slate-200 p-4 dark:border-white/10">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs text-slate-500">Week {occurrence.weekNumber} · {formatScheduleTime(item.time)}</div>
+                      <h3 className="mt-1 font-semibold">{item.title}</h3>
+                      <div className="mt-1 text-sm text-slate-500">{done ? "Workout saved" : skipped ? "Skipped — reopen from Split" : open === "paused" ? "Paused — your sets are saved" : open === "active" ? "Workout in progress" : item.detail}</div>
+                    </div>
+                    <Button variant="outline" className="min-h-11" disabled={skipped} onClick={() => startScheduledWorkout(item)}>
+                      {done ? "View workout" : open === "active" || open === "paused" ? "Resume workout" : "Open workout"}
+                    </Button>
+                  </div>
+                  <WorkoutDateControl key={occurrence.sessionKey} state={state} occurrence={occurrence} title={item.title} setState={setState} onMoved={onMoved} />
+                </section>;
+              }
 
               return (
                 <div
@@ -3425,7 +3531,7 @@ function WeeklyScheduler({
                           linkedDayId: type === "workout" ? item.linkedDayId || model.split.days[0]?.id : undefined,
                         })
                       }
-                      options={scheduleTypeOptions}
+                      options={scheduleTypeOptions.filter(option => option.value !== "workout")}
                     />
 
                     <div className="grid gap-2">
@@ -3496,7 +3602,8 @@ function WeeklyScheduler({
         </div>
 
         <div className="grid gap-3 rounded-[26px] border border-slate-200 bg-white/64 p-4 dark:border-white/10 dark:bg-white/[0.035]">
-          <div className="text-sm font-semibold text-slate-950 dark:text-white">Add to week</div>
+          <div className="text-sm font-semibold text-slate-950 dark:text-white">Add a reminder</div>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Manage workout sessions and their dates in Split.</p>
           <div className="grid gap-3 md:grid-cols-[140px_145px_112px_minmax(0,1fr)]">
             <SelectField<WeekdayId>
               value={draft.day}
@@ -3513,7 +3620,7 @@ function WeeklyScheduler({
                   linkedDayId: type === "workout" ? prev.linkedDayId || model.split.days[0]?.id || "" : "",
                 }))
               }
-              options={scheduleTypeOptions}
+                options={scheduleTypeOptions.filter(option => option.value !== "workout")}
             />
             <Input
               aria-label="New schedule item time"
@@ -3561,6 +3668,79 @@ function WeeklyScheduler({
   );
 }
 
+function useWorkoutMoveNotice(state: AppState, setState: React.Dispatch<React.SetStateAction<AppState>>) {
+  const [latestMove, setLatestMove] = useState<{ undo: WorkoutMoveUndo; date: string } | null>(null);
+  const [notice, setNotice] = useState("");
+  const onMoved = (undo: WorkoutMoveUndo, date: string) => {
+    setLatestMove({ undo, date });
+    setNotice(`Moved to ${date}. Sets, targets, and other weeks are unchanged.`);
+  };
+  const undoMove = () => {
+    if (!latestMove) return;
+    const result = undoWorkoutOccurrenceMove({ dateOverrides: state.workoutDateOverrides, undo: latestMove.undo,
+      completedSessionKeys: allCompletedWorkoutKeys(state), skippedWorkouts: state.skippedWorkouts });
+    if (result.changed) setState(prev => {
+      const current = undoWorkoutOccurrenceMove({ dateOverrides: prev.workoutDateOverrides, undo: latestMove.undo,
+        completedSessionKeys: allCompletedWorkoutKeys(prev), skippedWorkouts: prev.skippedWorkouts });
+      return current.changed ? { ...prev, workoutDateOverrides: { ...current.dateOverrides }, activeDayId: null } : prev;
+    });
+    setNotice(result.changed ? "Previous workout date restored." : "The workout changed since this move. Its current date was kept.");
+    setLatestMove(null);
+  };
+  const moveNotice = notice ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-[18px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-100">
+    <span>{notice}</span>
+    {latestMove ? <Button variant="outline" size="sm" className="min-h-11" onClick={undoMove}>Undo move</Button> : null}
+  </div> : null;
+  return { onMoved, moveNotice };
+}
+
+function WorkoutDateControl({ state, occurrence, title, setState, onMoved }: {
+  state: AppState;
+  occurrence: WorkoutOccurrence;
+  title: string;
+  setState: React.Dispatch<React.SetStateAction<AppState>>;
+  onMoved: (undo: WorkoutMoveUndo, date: string) => void;
+}) {
+  const [targetDate, setTargetDate] = useState(occurrence.scheduledDate ?? localDateKey(new Date()));
+  const [notice, setNotice] = useState("");
+  useEffect(() => {
+    setTargetDate(occurrence.scheduledDate ?? localDateKey(new Date()));
+  }, [occurrence.sessionKey, occurrence.scheduledDate]);
+  const resolved = allCompletedWorkoutKeys(state).has(occurrence.sessionKey) || Boolean(state.skippedWorkouts[occurrence.sessionKey]);
+  const move = () => {
+    const result = moveWorkoutOccurrence({ occurrence, dateOverrides: state.workoutDateOverrides, targetDate,
+      completedSessionKeys: allCompletedWorkoutKeys(state), skippedWorkouts: state.skippedWorkouts });
+    if (!result.changed) {
+      setNotice(result.reason === "unchanged" ? "This workout is already scheduled for that date." : "This workout cannot be moved. Choose a valid date for an unresolved session.");
+      return;
+    }
+    setState(prev => {
+      if ((prev.workoutDateOverrides[occurrence.sessionKey] ?? null) !== (state.workoutDateOverrides[occurrence.sessionKey] ?? null)) return prev;
+      const current = moveWorkoutOccurrence({ occurrence, dateOverrides: prev.workoutDateOverrides, targetDate,
+        completedSessionKeys: allCompletedWorkoutKeys(prev), skippedWorkouts: prev.skippedWorkouts });
+      return current.changed ? { ...prev, workoutDateOverrides: { ...current.dateOverrides }, activeDayId: null } : prev;
+    });
+    if (result.undo) onMoved(result.undo, targetDate);
+    setNotice("");
+  };
+  return <div className="mt-3 rounded-[18px] border border-slate-200 px-3 py-3 text-sm dark:border-white/10">
+    <div className="font-medium text-slate-700 dark:text-slate-200">
+      Scheduled {occurrence.scheduledDate ?? "date not set"}
+      {occurrence.moved ? ` · Moved from ${occurrence.plannedDate ?? "unscheduled"}` : ""}
+    </div>
+    {!resolved ? <details className="mt-2">
+      <summary className="min-h-11 cursor-pointer py-3 font-semibold">Move this workout</summary>
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <Input type="date" aria-label={`New date for ${title}`} value={targetDate}
+          onInput={event => setTargetDate(event.currentTarget.value)} onChange={event => setTargetDate(event.currentTarget.value)} />
+        <Button variant="outline" className="min-h-11" disabled={!isWorkoutDate(targetDate)} onClick={move}>Move once</Button>
+      </div>
+      <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Only week {occurrence.weekNumber} changes. Moving does not complete or skip the workout; an open session stays resumable.</p>
+    </details> : null}
+    {notice ? <div role="status" className="mt-2 text-xs text-slate-600 dark:text-slate-300">{notice}</div> : null}
+  </div>;
+}
+
 function HomeView({
   state,
   model,
@@ -3572,16 +3752,15 @@ function HomeView({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   goTo: (view: ViewId) => void;
 }) {
-  const today = activeSplitDay(model.split.days, state.activeDayId);
+  const nextWorkout = nextWorkoutFor(state, model.split.days);
+  const today = activeSplitDay(model.split.days, state.activeDayId, state);
+  const workoutWeek = nextWorkout.session?.weekNumber ?? nextWorkout.occurrence?.weekNumber ?? state.currentWeek;
   const todayMuscles = today ? dayMuscleSummary(today) : "";
-  const todayProgress = today ? dayCompletionFor(today, state, model.targetRir) : 0;
-  const todaySessionKey = today
-    ? workoutSessionKey(state.mesocycleId, state.currentWeek, today.id)
-    : null;
+  const todayProgress = today ? dayCompletionFor(today, { ...state, currentWeek: workoutWeek }, model.targetRir) : 0;
+  const todaySessionKey = nextWorkout.session?.sessionKey ?? nextWorkout.occurrence?.sessionKey ?? null;
   const todaySession = todaySessionKey ? state.workoutSessions[todaySessionKey] ?? null : null;
-  const openSession = Object.values(state.workoutSessions).find(
-    (session) => session.mesocycleId === state.mesocycleId && session.status !== "completed"
-  ) ?? null;
+  const displayedTargetRir = todaySession?.exercises.flatMap(exercise => exercise.prescriptions)[0]?.targetRir ?? model.targetRir;
+  const openSession = nextWorkout.kind === "resume" ? nextWorkout.session : null;
   const plannedSessionKeys = plannedSessionKeysForWeek(model.split.days, state.mesocycleId, state.currentWeek);
   const completedKeys = completedSessionKeysForWeek(
     state.workoutHistory,
@@ -3610,15 +3789,16 @@ function HomeView({
         mesoPaused: false,
       }));
     } else if (today) {
-      setState((prev) => ({ ...prev, activeDayId: today.id, mesoPaused: false }));
+      setState((prev) => ({ ...prev, currentWeek: workoutWeek, activeDayId: today.id, mesoPaused: false }));
+    } else {
+      goTo("training");
+      return;
     }
     goTo("today");
   };
   const workoutActionLabel = openSession
     ? "Resume workout"
-    : todaySession?.status === "completed" || todayProgress === 100
-      ? "Review workout"
-      : "Start workout";
+    : today ? "Open next workout" : "Review training plan";
 
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_390px]">
@@ -3674,7 +3854,7 @@ function HomeView({
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
               <PlayCircle className="h-5 w-5 text-rose-500" />
-              Today
+              {openSession ? "Workout in progress" : "Next workout"}
             </CardTitle>
           </CardHeader>
           <CardContent className="grid gap-4">
@@ -3683,15 +3863,20 @@ function HomeView({
                 <div>
                   <div className="text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{today.focus}</div>
                   <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">{todayMuscles}</div>
+                  <div className="mt-2 text-sm font-medium text-slate-600 dark:text-slate-300">
+                    {nextWorkout.occurrence?.scheduledDate ? `Scheduled ${nextWorkout.occurrence.scheduledDate}` : "Choose a workout date in Split"}
+                    {nextWorkout.kind === "planned" && nextWorkout.timing === "overdue" ? " · Not completed yet" : ""}
+                    {nextWorkout.kind === "planned" && nextWorkout.timing === "upcoming" ? " · Upcoming; open early if you choose" : ""}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                   <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
                     <div className="text-[10px] font-semibold uppercase text-slate-500">Week</div>
-                    <div className="mt-1 text-sm font-semibold">{state.currentWeek}/{state.mesoLengthWeeks}</div>
+                    <div className="mt-1 text-sm font-semibold">{workoutWeek}/{state.mesoLengthWeeks}</div>
                   </div>
                   <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
                     <div className="text-[10px] font-semibold uppercase text-slate-500">RIR</div>
-                    <div className="mt-1 text-sm font-semibold">{model.targetRir}</div>
+                    <div className="mt-1 text-sm font-semibold">{displayedTargetRir}</div>
                   </div>
                   <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
                     <div className="text-[10px] font-semibold uppercase text-slate-500">Lifts</div>
@@ -3715,12 +3900,12 @@ function HomeView({
                     ? "Resume sets"
                     : todaySession?.status === "completed" || todayProgress === 100
                       ? "Review workout"
-                      : "Open today"}
+                      : "Open next workout"}
                 </Button>
               </>
             ) : (
               <div className="rounded-[22px] border border-dashed border-slate-300 p-4 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
-                Build a split to start training.
+                {model.split.days.length ? "All workouts in this selected week are resolved. Review your split or choose the next week." : "Build a split to start training."}
               </div>
             )}
           </CardContent>
@@ -3814,6 +3999,7 @@ function TodayView({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   goTo: (view: ViewId) => void;
 }) {
+  const { onMoved, moveNotice } = useWorkoutMoveNotice(state, setState);
   const [replacementTarget, setReplacementTarget] = useState<ReplacementTarget | null>(null);
   const [techniqueTarget, setTechniqueTarget] = useState<string | null>(null);
   const [expandedLiftId, setExpandedLiftId] = useState<string | null>(null);
@@ -3825,12 +4011,20 @@ function TodayView({
   const [workoutMessage, setWorkoutMessage] = useState<{ tone: "success" | "warning"; text: string } | null>(null);
   const [addExerciseMuscle, setAddExerciseMuscle] = useState<MuscleGroup>("chest");
   const [now, setNow] = useState(Date.now());
-  const plannedToday = activeSplitDay(model.split.days, state.activeDayId);
-  const activeSessionKey = plannedToday
-    ? workoutSessionKey(state.mesocycleId, state.currentWeek, plannedToday.id)
-    : null;
+  const nextWorkout = nextWorkoutFor(state, model.split.days, true);
+  const plannedToday = model.split.days.find(day => day.id === (nextWorkout.session?.dayId ?? nextWorkout.occurrence?.dayId)) ?? null;
+  const activeSessionKey = nextWorkout.session?.sessionKey ?? nextWorkout.occurrence?.sessionKey ?? null;
   const activeSession = activeSessionKey ? state.workoutSessions[activeSessionKey] ?? null : null;
+  const workoutOccurrence = nextWorkout.occurrence ?? (activeSession
+    ? workoutOccurrencesForWeek(state, model.split.days, activeSession.weekNumber).find(item => item.sessionKey === activeSession.sessionKey) ?? null
+    : null);
   useEffect(() => setEditingRecovery(false), [activeSessionKey]);
+  useEffect(() => {
+    if (!activeSession || activeSession.status === "completed" || activeSession.weekNumber === state.currentWeek) return;
+    setState(prev => prev.mesocycleId === activeSession.mesocycleId && prev.currentWeek !== activeSession.weekNumber
+      ? { ...prev, currentWeek: activeSession.weekNumber, deloadMode: activeSession.weekNumber >= prev.mesoLengthWeeks }
+      : prev);
+  }, [activeSessionKey, activeSession?.status, activeSession?.weekNumber, state.currentWeek, setState]);
   const workoutIsPaused = activeSession?.status === "paused";
   const otherOpenSession = Object.values(state.workoutSessions).find(
     (session) =>
@@ -3838,31 +4032,7 @@ function TodayView({
       session.status !== "completed" &&
       session.sessionKey !== activeSessionKey
   ) ?? null;
-  const today: SplitDay | null = activeSession
-    ? {
-        id: activeSession.dayId,
-        day: activeSession.dayLabel,
-        focus: activeSession.workoutName,
-        intent: plannedToday?.intent ?? "Follow the frozen prescription saved when this workout started.",
-        lifts: activeSession.exercises.map((exercise) => {
-          const firstPrescription = exercise.prescriptions[0];
-          const low = firstPrescription?.repRange.low ?? 8;
-          const high = firstPrescription?.repRange.high ?? low;
-          return {
-            id: exercise.id,
-            exerciseId: exercise.exerciseId,
-            name: exercise.name,
-            muscleGroup: muscleOptions.includes(exercise.muscleGroup as MuscleGroup)
-              ? (exercise.muscleGroup as MuscleGroup)
-              : "chest",
-            pattern: exercise.pattern,
-            target: exercise.target,
-            sets: exercise.prescriptions.length,
-            reps: low === high ? `${low}` : `${low}-${high}`,
-          };
-        }),
-      }
-    : plannedToday;
+  const today: SplitDay | null = activeSession ? splitDayFromSession(activeSession, plannedToday) : plannedToday;
   useEffect(() => {
     const refresh = () => setNow(Date.now());
     refresh();
@@ -3927,9 +4097,9 @@ function TodayView({
       const remainingSetCount = currentExerciseLogs.filter((setItem) => !setItem.done && !setItem.skipped).length;
       setState((prev) => {
         const base = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
-        const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, dayId);
+        const sessionKey = activeSession.sessionKey;
         const currentSession = prev.workoutSessions[sessionKey];
-        if (!currentSession) return prev;
+        if (!currentSession || currentSession.status !== "active") return prev;
         let nextSession = currentSession;
         currentExerciseLogs
           .filter((setItem) => !setItem.done && !setItem.skipped)
@@ -3975,7 +4145,7 @@ function TodayView({
         }
         const workoutLog = { ...prev.workoutLog };
         nextSession.exercises.forEach((exercise) => {
-          workoutLog[workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, dayId, exercise.id)] =
+          workoutLog[workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, exercise.id)] =
             sessionSetLogsForExercise(nextSession, exercise.id).map(({ id, weight, reps, rir, done, skipped }) => ({
               id,
               weight,
@@ -4018,8 +4188,10 @@ function TodayView({
     }
     setState((prev) => {
       const base = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, dayId);
+      const sessionKey = activeSession?.sessionKey ?? activeSessionKey;
+      if (!sessionKey || !sessionKey.startsWith(`${prev.mesocycleId}:`)) return prev;
       const currentSession = prev.workoutSessions[sessionKey];
+      if (currentSession && currentSession.status !== "active") return prev;
       const nextSession = currentSession
         ? replaceSessionWorkoutExercise(
             currentSession,
@@ -4038,7 +4210,7 @@ function TodayView({
         : null;
       const workoutLog = { ...prev.workoutLog };
       if (nextSession) {
-        workoutLog[workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, dayId, liftId)] =
+        workoutLog[workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftId)] =
           sessionSetLogsForExercise(nextSession, liftId).map(({ id, weight, reps, rir, done, skipped }) => ({
             id,
             weight,
@@ -4082,9 +4254,10 @@ function TodayView({
             <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-slate-200 bg-white/70 dark:border-white/10 dark:bg-white/[0.04]">
               <Dumbbell className="h-5 w-5 text-rose-500" />
             </div>
-            <h2 className="mt-4 text-xl font-semibold text-slate-950 dark:text-white">No workout is scheduled</h2>
+            <h2 className="mt-4 text-xl font-semibold text-slate-950 dark:text-white">{model.split.days.length ? "This week is resolved" : "No workout is scheduled"}</h2>
+            <div className="mt-3">{moveNotice}</div>
             <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
-              Add a training day or choose a template before starting a workout.
+              {workoutMessage?.text ?? (model.split.days.length ? "Review a saved workout or choose another week in your training plan." : "Add a training day or choose a template before starting a workout.")}
             </p>
             <Button className="mt-5 gap-2" onClick={() => goTo("training")}>
               <CalendarDays className="h-4 w-4" />
@@ -4181,6 +4354,7 @@ function TodayView({
     const startedAt = new Date().toISOString();
     setState((prev) => {
       const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, plannedToday.id);
+      if (sessionKey !== activeSessionKey || allCompletedWorkoutKeys(prev).has(sessionKey) || prev.skippedWorkouts[sessionKey]) return prev;
       if (prev.workoutSessions[sessionKey]) return prev;
       if (Object.values(prev.recoveryCheckins).some(checkin => checkin.sessionKey === sessionKey && !checkin.skipped && checkin.jointPain >= 4)) return prev;
       if (
@@ -4260,9 +4434,23 @@ function TodayView({
     setWorkoutMessage({ tone: "success", text: `${plannedToday.focus} started. Your targets are frozen for this session.` });
   };
 
+  if (nextWorkout.kind === "review" && !activeSession) {
+    const history = state.workoutHistory.filter(entry => entry.sessionKey === activeSessionKey);
+    return <Card><CardContent className="grid gap-4 p-6">
+      <h2 className="text-2xl font-semibold">{today.focus} · Saved workout</h2>
+      <p className="text-sm text-slate-500">Week {nextWorkout.occurrence.weekNumber}. These are recorded results, not a new workout.</p>
+      {history.map(entry => <div key={entry.id} className="rounded-xl border border-slate-200 p-3 dark:border-white/10">
+        <div className="font-semibold">{entry.liftName}</div>
+        <div className="mt-1 text-sm">{entry.sets.filter(set => !set.skipped).map(set => `${set.weight} lb × ${set.reps}`).join(" · ") || "No working sets"}</div>
+      </div>)}
+      <Button variant="outline" onClick={() => goTo("training")}>Back to training plan</Button>
+    </CardContent></Card>;
+  }
+
   if (!activeSession) {
     return (
       <div className="grid gap-5 pb-24 lg:pb-0">
+        {moveNotice}
         {workoutMessage ? (
           <div role="status" className="rounded-[18px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-950 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-100">
             {workoutMessage.text}
@@ -4338,6 +4526,7 @@ function TodayView({
                 </div>
               ))}
             </div>
+            {workoutOccurrence ? <WorkoutDateControl key={workoutOccurrence.sessionKey} state={state} occurrence={workoutOccurrence} title={today.focus} setState={setState} onMoved={onMoved} /> : null}
             <Button size="lg" className="min-h-12 gap-2" onClick={startWorkout} disabled={missingRecoveryMuscles.length > 0 || recoveryStop || Boolean(otherOpenSession)}>
               <PlayCircle className="h-5 w-5" />
               Start workout
@@ -4499,7 +4688,7 @@ function TodayView({
   const toggleWorkoutPause = () => {
     setState((prev) => {
       const timestamp = new Date().toISOString();
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
       if (!currentSession || currentSession.status === "completed") return prev;
       const isPaused = currentSession.status === "paused";
@@ -4566,8 +4755,9 @@ function TodayView({
   const moveLift = (dayId: string, liftId: string, direction: -1 | 1) => {
     setState((prev) => {
       const base = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, dayId);
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status !== "active") return prev;
       return {
         ...prev,
         workoutSessions: currentSession
@@ -4649,15 +4839,15 @@ function TodayView({
   const addSet = (liftItem: WorkoutLift) => {
     setState((prev) => {
       const timestamp = new Date().toISOString();
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
-      const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
-      const current = setsForLift(
-        liftItem,
-        savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-        workoutTargetRir
-      );
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
       if (!currentSession || currentSession.status !== "active") return prev;
+      const logKey = workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftItem.id);
+      const current = setsForLift(
+        liftItem,
+        sessionSetLogsForExercise(currentSession, liftItem.id),
+        workoutTargetRir
+      );
       const lastRaw = current[current.length - 1];
       const last = (lastRaw && visibleSessionSetDraft(prev, currentSession, liftItem, lastRaw.id)) ?? defaultSetLogsForLift(liftItem, workoutTargetRir)[0];
       const nextSession = currentSession
@@ -4703,7 +4893,7 @@ function TodayView({
     const nextLift = createLiftFromOption(option, today.lifts.length);
     setState((prev) => {
       const base = prev.customSplit ?? cloneSplitForEditing(model.baseSplit.days);
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
       if (!currentSession || currentSession.status !== "active") return prev;
       const nextSession = currentSession
@@ -4721,7 +4911,7 @@ function TodayView({
         : null;
       const workoutLog = { ...prev.workoutLog };
       if (nextSession) {
-        workoutLog[workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, nextLift.id)] =
+        workoutLog[workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, nextLift.id)] =
           sessionSetLogsForExercise(nextSession, nextLift.id).map(({ id, weight, reps, rir, done, skipped }) => ({
             id,
             weight,
@@ -4754,15 +4944,15 @@ function TodayView({
       return;
     }
     setState((prev) => {
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
-      const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
-      const current = setsForLift(
-        liftItem,
-        savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-        workoutTargetRir
-      );
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
       if (!currentSession || currentSession.status !== "active") return prev;
+      const logKey = workoutLiftLogKey(currentSession.mesocycleId, currentSession.weekNumber, currentSession.dayId, liftItem.id);
+      const current = setsForLift(
+        liftItem,
+        sessionSetLogsForExercise(currentSession, liftItem.id),
+        workoutTargetRir
+      );
       const nextSession = currentSession
         ? removeSessionWorkoutSet(currentSession, setId, new Date().toISOString())
         : null;
@@ -4843,15 +5033,20 @@ function TodayView({
     setState((prev) => {
       const nextLog = { ...prev.workoutLog };
       const sessionLog: Record<string, WorkoutSetLog[]> = {};
-      const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, today.id);
+      const sessionKey = activeSession.sessionKey;
       const currentSession = prev.workoutSessions[sessionKey];
+      if (!currentSession || currentSession.status === "completed" || currentSession.mesocycleId !== prev.mesocycleId) return prev;
       const finishedSessionResult = currentSession
         ? finishWorkoutSession(currentSession, { now: completedAt, skipIncomplete: skipUnfinished })
         : null;
       if (!finishedSessionResult?.completed) return prev;
       const completedSession = finishedSessionResult.session;
-      today.lifts.forEach((liftItem) => {
-        const logKey = workoutLiftLogKey(prev.mesocycleId, prev.currentWeek, today.id, liftItem.id);
+      const completedDay = splitDayFromSession(completedSession);
+      const completedWeek = completedSession.weekNumber;
+      const completedMeso = completedSession.mesocycleId;
+      const completedTargetRir = completedSession.exercises.flatMap(exercise => exercise.prescriptions)[0]?.targetRir ?? workoutTargetRir;
+      completedDay.lifts.forEach((liftItem) => {
+        const logKey = workoutLiftLogKey(completedMeso, completedWeek, completedSession.dayId, liftItem.id);
         const sessionSets = completedSession
           ? sessionSetLogsForExercise(completedSession, liftItem.id).map(({ id, weight, reps, rir, done, skipped }) => ({
               id,
@@ -4866,8 +5061,8 @@ function TodayView({
           ? sessionSets
           : setsForLift(
               liftItem,
-              savedSetsForLift(prev.workoutLog, prev.mesocycleId, prev.currentWeek, today.id, liftItem.id),
-              workoutTargetRir
+              savedSetsForLift(prev.workoutLog, completedMeso, completedWeek, completedSession.dayId, liftItem.id),
+              completedTargetRir
             ).map((setItem) =>
               !setItem.done && !setItem.skipped && skipUnfinished
                 ? { ...setItem, done: true, skipped: true }
@@ -4884,43 +5079,40 @@ function TodayView({
           )
         : undefined;
       const nextHistory = buildWorkoutHistoryEntries(
-        today,
+        completedDay,
         sessionLog,
-        workoutTargetRir,
-        prev.mesocycleId,
-        prev.currentWeek,
+        completedTargetRir,
+        completedMeso,
+        completedWeek,
         completedAt,
         completedSession?.startedAt,
         sessionDurationSec
       );
       const existingHistory = prev.workoutHistory.filter((entry) => entry.sessionKey !== sessionKey);
-      const nextWorkoutHistory = [...nextHistory, ...existingHistory].slice(0, 480);
+      const nextWorkoutHistory = [...nextHistory, ...existingHistory];
       const nextSkippedWorkouts = { ...prev.skippedWorkouts };
       delete nextSkippedWorkouts[sessionKey];
-      const plannedSessionKeys = plannedSessionKeysForWeek(model.split.days, prev.mesocycleId, prev.currentWeek);
+      const plannedSessionKeys = plannedSessionKeysForWeek(model.split.days, completedMeso, completedWeek);
       const completedKeys = completedSessionKeysForWeek(
         nextWorkoutHistory,
-        prev.mesocycleId,
-        prev.currentWeek,
+        completedMeso,
+        completedWeek,
         plannedSessionKeys
       );
       const completedThisWeek = completedKeys.size;
       const skippedThisWeek = skippedSessionCountForWeek(
         nextSkippedWorkouts,
-        prev.mesocycleId,
-        prev.currentWeek,
+        completedMeso,
+        completedWeek,
         completedKeys,
         plannedSessionKeys
       );
-      const weekDone = completedThisWeek + skippedThisWeek >= model.split.days.length;
-      const mesoComplete = weekDone && prev.currentWeek >= prev.mesoLengthWeeks;
-      const alreadyCountedMeso =
-        prev.mesoPaused && prev.deloadMode && prev.currentWeek >= prev.mesoLengthWeeks && Boolean(prev.lastMesoCompletedAt);
-      const nextWeek = weekDone && !mesoComplete ? Math.min(prev.currentWeek + 1, prev.mesoLengthWeeks) : prev.currentWeek;
-      const nextOpenDay = model.split.days.find((day) => {
-        const candidateKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, day.id);
-        return !completedKeys.has(candidateKey) && !nextSkippedWorkouts[candidateKey];
-      });
+      const weekDone = model.split.days.length > 0 && completedThisWeek + skippedThisWeek >= model.split.days.length;
+      const mesoComplete = weekDone && completedWeek >= prev.mesoLengthWeeks;
+      const nextWeek = prev.currentWeek === completedWeek && weekDone && !mesoComplete
+        ? Math.min(completedWeek + 1, prev.mesoLengthWeeks) : prev.currentWeek;
+      const completionCredit = creditMesocycleCompletion({ mesocycleId: completedMeso,
+        completedMesoIds: prev.completedMesoIds, completedMesoCount: prev.completedMesoCount, complete: mesoComplete });
       const nextMuscleFeedback = { ...prev.muscleFeedback };
       let nextPainFreeExercises = [...prev.painFreeExercises];
       let nextPainfulExercises = [...prev.painfulExercises];
@@ -4957,12 +5149,13 @@ function TodayView({
         skippedWorkouts: nextSkippedWorkouts,
         restTimer: null,
         workoutPaused: false,
-        activeDayId: weekDone && !mesoComplete ? model.split.days[0]?.id ?? today.id : nextOpenDay?.id ?? today.id,
+        activeDayId: null,
         currentWeek: nextWeek,
         deloadMode: mesoComplete ? prev.deloadMode : nextWeek >= prev.mesoLengthWeeks,
         mesoPaused: mesoComplete ? true : prev.mesoPaused,
-        lastMesoCompletedAt: mesoComplete ? completedAt : prev.lastMesoCompletedAt,
-        completedMesoCount: mesoComplete && !alreadyCountedMeso ? prev.completedMesoCount + 1 : prev.completedMesoCount,
+        lastMesoCompletedAt: mesoComplete ? prev.lastMesoCompletedAt ?? completedAt : prev.lastMesoCompletedAt,
+        completedMesoCount: completionCredit.completedMesoCount,
+        completedMesoIds: completionCredit.completedMesoIds,
       };
     });
     setShowFinishPrompt(false);
@@ -4974,6 +5167,7 @@ function TodayView({
 
   return (
     <div className="grid gap-5 pb-24 lg:pb-0">
+      {moveNotice}
       {workoutMessage ? (
         <div
           role={workoutMessage.tone === "warning" ? "alert" : "status"}
@@ -5007,7 +5201,7 @@ function TodayView({
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Week {state.currentWeek} · Session {todayIndex + 1}/{model.split.days.length}</p>
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">Week {activeSession.weekNumber} · Session {todayIndex + 1}/{model.split.days.length}</p>
               <CardTitle className="mt-1 text-2xl">{today.focus}</CardTitle>
               <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{workoutTargetRir} RIR target · {productiveSets} {productiveSets === 1 ? "set" : "sets"} logged</p>
             </div>
@@ -5027,6 +5221,7 @@ function TodayView({
             <Progress value={sessionProgress} className="mt-2" />
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Planned: {state.sessionMinutes} min · Elapsed excludes pauses.</p>
           </div>
+          {workoutOccurrence ? <WorkoutDateControl key={workoutOccurrence.sessionKey} state={state} occurrence={workoutOccurrence} title={today.focus} setState={setState} onMoved={onMoved} /> : null}
           {activeRest ? (
             <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-[22px] border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-emerald-950 dark:border-emerald-400/20 dark:bg-emerald-400/10 dark:text-emerald-100">
               <div className="flex items-center gap-2 text-sm font-semibold">
@@ -5540,12 +5735,15 @@ function TrainingView({
   setState: React.Dispatch<React.SetStateAction<AppState>>;
   goTo: (view: ViewId) => void;
 }) {
+  const { onMoved, moveNotice } = useWorkoutMoveNotice(state, setState);
   const [replacementTarget, setReplacementTarget] = useState<ReplacementTarget | null>(null);
   const [newLiftGroups, setNewLiftGroups] = useState<Record<string, MuscleGroup>>({});
   const [showBuilder, setShowBuilder] = useState(false);
   const [endMesoConfirmationPending, setEndMesoConfirmationPending] = useState(false);
   const [pendingTemplateId, setPendingTemplateId] = useState<MesoTemplateId | null>(null);
   const editableSplit = state.customSplit ?? model.split.days;
+  const workoutOccurrences = workoutOccurrencesForWeek(state, editableSplit);
+  const nextWorkout = nextWorkoutFor(state, model.split.days);
   const openMesoSession = openWorkoutSessionForMesocycle(state.workoutSessions, state.mesocycleId);
   const selectedTemplate = mesoTemplates.find((template) => template.id === state.activeTemplate) ?? mesoTemplates[0];
   const pendingTemplate = mesoTemplates.find((template) => template.id === pendingTemplateId) ?? null;
@@ -5623,7 +5821,8 @@ function TrainingView({
   };
 
   const previewForBuilder = (draft: MesocycleBuilderDraft): MesocyclePreview => {
-    const baseDays = splitFromBuilderDraft(draft);
+    const constrained = splitFromBuilderDraft(draft, state);
+    const baseDays = constrained.days;
     const previewTargetRir = targetRirForWeek(1, draft.mesoLengthWeeks, false);
     const draftBuilderExercises = [...draft.customExercises, ...builderExercises].filter(
       (exercise, index, exercises) =>
@@ -5689,11 +5888,17 @@ function TrainingView({
       estimatedMinutes: estimatedSessionMinutesFor(day.lifts),
       muscles: dayMuscleSummary(day) || "Add an eligible exercise",
     }));
-    const startDate = /^\d{4}-\d{2}-\d{2}$/.test(draft.startDate)
-      ? new Date(`${draft.startDate}T12:00:00`)
-      : null;
+    const startTimestamp = builderStartTimestamp(draft.startDate);
     const issues: string[] = [];
-    if (!startDate || !Number.isFinite(startDate.getTime())) issues.push("Choose a valid starting date.");
+    constrained.unmetPriorities.forEach((item) => {
+      issues.push(`${muscleLabels[item.muscleGroup as MuscleGroup]} ${priorityLabels[item.priority].toLowerCase()} is not covered. ${item.detail}`);
+    });
+    constrained.conflicts.forEach((item) => {
+      const dayLabel = baseDays.find((day) => day.id === item.dayId)?.focus;
+      const issue = `${dayLabel ? `${dayLabel}: ` : ""}${item.reason}`;
+      if (!issues.includes(issue)) issues.push(issue);
+    });
+    if (!startTimestamp) issues.push("Choose a valid starting date.");
     if (draft.availableTrainingDays.length !== draft.sessionsPerWeek) {
       issues.push(`Choose exactly ${draft.sessionsPerWeek} training days.`);
     }
@@ -5727,14 +5932,21 @@ function TrainingView({
         return { week, targetRir: targetRirForWeek(week, draft.mesoLengthWeeks, deload), deload };
       }),
       issues,
+      adjustments: baseDays.flatMap((day) => {
+        const omitted = constrained.omissions.filter((item) => item.dayId === day.id && item.reason === "duration");
+        return omitted.length > 0
+          ? [`${day.focus}: left out ${omitted.map((item) => item.lift.name).join(", ")} to fit ${draft.sessionMinutes} minutes while retaining priority-muscle coverage.`]
+          : [];
+      }),
     };
   };
 
   const applyBuilderDraft = (draft: MesocycleBuilderDraft) => {
     if (resumeOpenMesoSession()) return;
-    const customSplit = splitFromBuilderDraft(draft);
+    const customSplit = splitFromBuilderDraft(draft, state).days;
     if (previewForBuilder(draft).issues.length > 0) return;
-    const startTimestamp = new Date(`${draft.startDate}T12:00:00`).toISOString();
+    const startTimestamp = builderStartTimestamp(draft.startDate);
+    if (!startTimestamp) return;
     const mesocycleId = `${mesocycleIdForStart(startTimestamp)}-${Date.now().toString(36)}`;
     setState((prev) => {
       const generatedWorkoutItems = customSplit.map((day, index) => ({
@@ -5769,7 +5981,7 @@ function TrainingView({
         customSplit,
         currentWeek: 1,
         deloadMode: false,
-        activeDayId: customSplit[0]?.id ?? null,
+        activeDayId: null,
         skippedWorkouts: {},
         workoutLog: {},
         restTimer: null,
@@ -5817,7 +6029,7 @@ function TrainingView({
         currentWeek: 1,
         deloadMode: false,
         customSplit: null,
-        activeDayId: templateDays[0]?.id ?? null,
+        activeDayId: null,
         skippedWorkouts: {},
         workoutLog: {},
         restTimer: null,
@@ -5947,7 +6159,7 @@ function TrainingView({
     if (resumeOpenMesoSession()) return;
     setState((prev) => {
       const currentWeek = clamp(week, 1, prev.mesoLengthWeeks);
-      return { ...prev, currentWeek, deloadMode: currentWeek === prev.mesoLengthWeeks };
+      return { ...prev, currentWeek, activeDayId: null, deloadMode: currentWeek === prev.mesoLengthWeeks };
     });
   };
 
@@ -5980,10 +6192,11 @@ function TrainingView({
     if (completedKeys.has(key)) return;
 
     setState((prev) => {
+      if (key !== workoutSessionKey(prev.mesocycleId, prev.currentWeek, dayId) || allCompletedWorkoutKeys(prev).has(key)) return prev;
       const nextSkippedWorkouts = { ...prev.skippedWorkouts };
       if (nextSkippedWorkouts[key]) {
         delete nextSkippedWorkouts[key];
-        return { ...prev, skippedWorkouts: nextSkippedWorkouts };
+        return { ...prev, skippedWorkouts: nextSkippedWorkouts, activeDayId: null, mesoPaused: false };
       }
 
       nextSkippedWorkouts[key] = true;
@@ -6002,24 +6215,22 @@ function TrainingView({
         nextCompletedKeys,
         plannedSessionKeys
       );
-      const weekDone = completedThisWeek + nextSkippedThisWeek >= model.split.days.length;
+      const weekDone = model.split.days.length > 0 && completedThisWeek + nextSkippedThisWeek >= model.split.days.length;
       const mesoComplete = weekDone && prev.currentWeek >= prev.mesoLengthWeeks;
       const nextWeek = weekDone && !mesoComplete ? Math.min(prev.currentWeek + 1, prev.mesoLengthWeeks) : prev.currentWeek;
-      const nextOpenDay =
-        model.split.days.find((day) => {
-          const sessionKey = workoutSessionKey(prev.mesocycleId, prev.currentWeek, day.id);
-          return !nextCompletedKeys.has(sessionKey) && !nextSkippedWorkouts[sessionKey];
-        }) ?? model.split.days[0];
+      const completionCredit = creditMesocycleCompletion({ mesocycleId: prev.mesocycleId,
+        completedMesoIds: prev.completedMesoIds, completedMesoCount: prev.completedMesoCount, complete: mesoComplete });
 
       return {
         ...prev,
         skippedWorkouts: nextSkippedWorkouts,
         currentWeek: nextWeek,
-        activeDayId: weekDone && !mesoComplete ? model.split.days[0]?.id ?? null : nextOpenDay?.id ?? prev.activeDayId,
+        activeDayId: null,
         deloadMode: mesoComplete ? prev.deloadMode : nextWeek >= prev.mesoLengthWeeks,
         mesoPaused: mesoComplete ? true : prev.mesoPaused,
-        lastMesoCompletedAt: mesoComplete ? new Date().toISOString() : prev.lastMesoCompletedAt,
-        completedMesoCount: mesoComplete ? prev.completedMesoCount + 1 : prev.completedMesoCount,
+        lastMesoCompletedAt: mesoComplete ? prev.lastMesoCompletedAt ?? new Date().toISOString() : prev.lastMesoCompletedAt,
+        completedMesoCount: completionCredit.completedMesoCount,
+        completedMesoIds: completionCredit.completedMesoIds,
       };
     });
   };
@@ -6031,19 +6242,14 @@ function TrainingView({
 
   const endMeso = () => {
     const completedAt = new Date().toISOString();
-    setState((prev) => ({
-      ...prev,
-      mesoPaused: true,
-      workoutPaused: false,
-      restTimer: null,
-      currentWeek: prev.mesoLengthWeeks,
-      deloadMode: true,
-      lastMesoCompletedAt: completedAt,
-      completedMesoCount:
-        prev.mesoPaused && prev.deloadMode && prev.currentWeek >= prev.mesoLengthWeeks && prev.lastMesoCompletedAt
-          ? prev.completedMesoCount
-          : prev.completedMesoCount + 1,
-    }));
+    setState((prev) => {
+      const completionCredit = creditMesocycleCompletion({ mesocycleId: prev.mesocycleId,
+        completedMesoIds: prev.completedMesoIds, completedMesoCount: prev.completedMesoCount, complete: true });
+      return { ...prev, mesoPaused: true, workoutPaused: false, restTimer: null, activeDayId: null,
+        currentWeek: prev.mesoLengthWeeks, deloadMode: true,
+        lastMesoCompletedAt: prev.lastMesoCompletedAt ?? completedAt,
+        completedMesoCount: completionCredit.completedMesoCount, completedMesoIds: completionCredit.completedMesoIds };
+    });
     setEndMesoConfirmationPending(false);
     setPendingTemplateId(null);
   };
@@ -6220,12 +6426,14 @@ function TrainingView({
             </section>
           ) : null}
 
+          {moveNotice}
           {editableSplit.map((day, dayIndex) => {
             const sessionKey = workoutSessionKey(state.mesocycleId, state.currentWeek, day.id);
+            const occurrence = workoutOccurrences.find(item => item.sessionKey === sessionKey);
             const complete = completedKeys.has(sessionKey);
             const skipped = Boolean(state.skippedWorkouts[sessionKey]) && !complete;
             const progress = dayCompletionFor(day, state, model.targetRir);
-            const active = state.activeDayId === day.id;
+            const active = nextWorkout.session?.sessionKey === sessionKey || nextWorkout.occurrence?.sessionKey === sessionKey;
 
             return (
               <motion.section
@@ -6351,6 +6559,7 @@ function TrainingView({
                 </div>
               )}
               {!state.customSplit ? <Progress value={complete || skipped ? 100 : progress} className="mt-3 h-2" /> : null}
+              {occurrence ? <WorkoutDateControl key={occurrence.sessionKey} state={state} occurrence={occurrence} title={day.focus} setState={setState} onMoved={onMoved} /> : null}
               <div className="mt-3 grid gap-2">
                 {day.lifts.map((item) => (
                   <LiftRow
@@ -7288,9 +7497,13 @@ function MoreView({
 }
 
 export default function App() {
-  const [initialStorageRead] = useState(() => readLocalState({ getItem: key => window.localStorage.getItem(key) }, STORAGE_KEY));
-  const persistedRawRef = React.useRef<string | null | undefined>(initialStorageRead.status === "read" ? initialStorageRead.raw : undefined);
-  const [state, setState] = useState<AppState>(() => loadState());
+  const [initialLoad] = useState(() => loadAppStateSafely({
+    storage: { getItem: key => window.localStorage.getItem(key) },
+    key: STORAGE_KEY, legacyKeys: LEGACY_STORAGE_KEYS, defaultState, normalize: normalizeSavedAppState,
+  }));
+  const persistedRawRef = React.useRef<string | null | undefined>(initialLoad.baselineRaw);
+  const [state, setState] = useState<AppState>(initialLoad.state);
+  const [loadProblem, setLoadProblem] = useState<string | null>(initialLoad.problem);
   const [nutritionDate, setNutritionDate] = useState(() => foodDiaryDateKey(new Date()));
   const [activeView, setActiveView] = useState<ViewId>(() => initialView());
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
@@ -7316,7 +7529,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (storageConflict) return;
+    if (storageConflict || loadProblem) return;
     try {
       if (persistedRawRef.current === undefined) {
         setPersistenceError("Saved data could not be read. This tab will not replace it. Reload when device storage is available.");
@@ -7340,7 +7553,7 @@ export default function App() {
     } catch {
       setPersistenceError("Changes are visible now, but this device could not save them for the next app launch.");
     }
-  }, [state, storageConflict]);
+  }, [state, storageConflict, loadProblem]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", state.theme === "dark");
@@ -7376,7 +7589,43 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
+  const restoreBackup = (raw: BackupState): { ok: boolean; message?: string } => {
+    if (storageConflict || persistedRawRef.current === undefined) {
+      return { ok: false, message: "Reload the latest saved data before restoring a backup." };
+    }
+    try {
+      const source = validateBackupState(raw);
+      const restored = normalizeAppState(source);
+      const changes = backupNormalizationChanges(source, restored as unknown as BackupState);
+      if (changes.length) {
+        return { ok: false, message: `This file cannot be restored without changing its ${changes.slice(0, 3).join(", ")} records. Nothing was replaced. Keep the file for recovery.` };
+      }
+      // Commit to storage first. A failed save must not replace the visible state.
+      const result = optimisticWriteLocalState({
+        storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
+        key: STORAGE_KEY, expectedRaw: persistedRawRef.current, nextRaw: JSON.stringify(restored),
+      });
+      if (result.status === "conflict") {
+        setStorageConflict(true);
+        return { ok: false, message: "Another tab changed the saved data. Reload before restoring so those changes are not overwritten." };
+      }
+      if (result.status === "error") {
+        return { ok: false, message: "This device could not save the backup. Your current data has not been replaced." };
+      }
+      persistedRawRef.current = result.baselineRaw;
+      setState(restored);
+      setLoadProblem(null);
+      setPersistenceError(null);
+      setShowResetPrompt(false);
+      setNotificationNotice(null);
+      return { ok: true };
+    } catch (cause) {
+      return { ok: false, message: cause instanceof Error ? cause.message : "This backup could not be restored. Nothing was replaced." };
+    }
+  };
+
   useEffect(() => {
+    if (storageConflict || loadProblem) return undefined;
     const timer = state.restTimer;
     if (!timer) return undefined;
     if (!restTimerSession) {
@@ -7405,9 +7654,10 @@ export default function App() {
       );
     }, remainingMs + 50);
     return () => window.clearTimeout(timeout);
-  }, [restTimerSession, setState, state.restTimer]);
+  }, [restTimerSession, setState, state.restTimer, storageConflict, loadProblem]);
 
   useEffect(() => {
+    if (storageConflict || loadProblem) return undefined;
     const timer = state.restTimer;
     if (!timer || !restTimerSession || restTimerSession.status === "paused" || timer.endsAt <= Date.now()) {
       setNotificationNotice(null);
@@ -7442,7 +7692,7 @@ export default function App() {
         console.warn("Unable to cancel the rest-timer notification.", error);
       });
     };
-  }, [restTimerExerciseName, restTimerSession?.status, state.restTimer]);
+  }, [restTimerExerciseName, restTimerSession?.status, state.restTimer, storageConflict, loadProblem]);
 
   useEffect(() => {
     const syncViewFromHash = () => {
@@ -7473,9 +7723,11 @@ export default function App() {
           <div className="premium-sidebar sticky top-6 p-4">
             <BodyPilotLogo size="md" />
             <div className="mt-5 rounded-[24px] border border-slate-200/70 bg-white/68 p-4 dark:border-white/10 dark:bg-white/[0.04]">
+              {loadProblem ? <p className="text-sm">Data recovery mode · automatic saving is paused.</p> : <>
               <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Readiness</div>
               <div className={`mt-1 text-4xl font-semibold ${readinessTone(model.readiness)}`}>{model.readiness}%</div>
               <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{model.primarySuggestion.title}</p>
+              </>}
             </div>
 
             <nav className="mt-5 space-y-2">
@@ -7517,20 +7769,20 @@ export default function App() {
               <h2 className="mt-1 text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{activeMeta.label}</h2>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="outline" className="hidden bg-white/60 dark:bg-white/[0.04] sm:inline-flex">
+              {!loadProblem ? <Badge variant="outline" className="hidden bg-white/60 dark:bg-white/[0.04] sm:inline-flex">
                 {goals[state.goal].label}
-              </Badge>
+              </Badge> : null}
               <Button
                 variant="outline"
                 size="sm"
                 className="gap-2"
-                disabled={storageConflict}
+                disabled={storageConflict || Boolean(loadProblem)}
                 onClick={() => setState((prev) => ({ ...prev, theme: prev.theme === "dark" ? "light" : "dark" }))}
               >
                 <Settings2 className="h-4 w-4" />
                 {state.theme === "dark" ? "Light" : "Dark"}
               </Button>
-              <Button variant="ghost" size="sm" className="gap-2" disabled={storageConflict} onClick={() => setShowResetPrompt(true)}>
+              <Button variant="ghost" size="sm" className="gap-2" disabled={storageConflict || Boolean(loadProblem)} onClick={() => setShowResetPrompt(true)}>
                 <RotateCcw className="h-4 w-4" />
                 Reset
               </Button>
@@ -7570,12 +7822,25 @@ export default function App() {
                 <Button className="min-h-11" onClick={() => window.location.reload()}>Reload saved data</Button>
               </CardContent>
             </Card>
+          ) : loadProblem ? (
+            <div className="grid gap-4">
+              <Card><CardContent className="grid gap-3 p-5">
+                <h2 className="text-lg font-semibold">Your saved data needs attention</h2>
+                <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{loadProblem}</p>
+                <p className="text-sm text-slate-600 dark:text-slate-300">Nothing has been overwritten. Editing and automatic saving are paused. Keep a copy of the original saved data before restoring a trusted backup.</p>
+                <Button variant="outline" className="min-h-11" onClick={() => window.location.reload()}>Try loading saved data again</Button>
+              </CardContent></Card>
+              {initialLoad.recoveryCopy ? <BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup}
+                recoveryCopy={initialLoad.recoveryCopy}
+                restoreBlockedReason={persistedRawRef.current === undefined ? "Device storage is unavailable. Reload once access is restored." : undefined} /> : null}
+            </div>
           ) : <>
           {activeView === "home" ? <HomeView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "today" ? <TodayView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "food" ? <FoodView state={state} model={model} setState={setState} /> : null}
           {activeView === "training" ? <TrainingView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "more" ? <MoreView state={state} model={model} setState={setState} goTo={goTo} /> : null}
+          {activeView === "more" ? <div className="mt-5"><BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup} /></div> : null}
           </>}
         </section>
       </div>
@@ -7601,7 +7866,7 @@ export default function App() {
         </div>
       </nav>
 
-      {showResetPrompt && !storageConflict ? (
+      {showResetPrompt && !storageConflict && !loadProblem ? (
         <div className="fixed inset-0 z-[90] grid items-end bg-slate-950/65 p-3 backdrop-blur-sm sm:place-items-center" role="presentation">
           <div
             role="dialog"
@@ -7631,7 +7896,7 @@ export default function App() {
               <Button
                 className="bg-rose-600 text-white hover:bg-rose-700"
                 onClick={() => {
-                  if (storageConflict) return;
+                  if (storageConflict || loadProblem) return;
                   setState(defaultState);
                   setShowResetPrompt(false);
                   setNotificationNotice(null);

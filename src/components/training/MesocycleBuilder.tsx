@@ -66,6 +66,7 @@ export type MesocyclePreview = {
   muscleFrequency: Array<{ muscle: string; sessions: number }>;
   loadingWeeks: Array<{ week: number; targetRir: number; deload: boolean }>;
   issues: string[];
+  adjustments?: string[];
 };
 
 type Props = {
@@ -411,7 +412,7 @@ export function MesocycleBuilder({ initialDraft, exercises, muscleLabels, previe
             </label>
             <label className="grid gap-2 text-sm font-semibold text-slate-950 dark:text-white">
               Starting date
-              <Input type="date" value={draft.startDate} onChange={(event) => setDraft((current) => ({ ...current, startDate: event.target.value }))} />
+              <Input type="date" value={draft.startDate} onInput={(event) => setDraft((current) => ({ ...current, startDate: event.currentTarget.value }))} onChange={(event) => setDraft((current) => ({ ...current, startDate: event.target.value }))} />
             </label>
             <label className="grid gap-2 text-sm font-semibold text-slate-950 dark:text-white">
               Smallest load increase
@@ -485,7 +486,18 @@ export function MesocycleBuilder({ initialDraft, exercises, muscleLabels, previe
               <div className="mt-2 flex flex-wrap gap-2">
                 {preview.weeklySets.map((item) => <Badge key={item.muscle} variant="outline">{item.muscle} · {item.sets}</Badge>)}
               </div>
+              <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
+                Times include week 1 set adjustments. Later volume changes can increase duration; weekly muscle coverage is not a guarantee of optimal volume.
+              </p>
             </div>
+            {preview.adjustments && preview.adjustments.length > 0 ? (
+              <details className="rounded-[18px] border border-slate-200 p-3 text-sm text-slate-600 dark:border-white/10 dark:text-slate-300">
+                <summary className="cursor-pointer font-semibold text-slate-900 dark:text-white">What changed to fit your time</summary>
+                <ul className="mt-2 list-disc space-y-2 pl-5">
+                  {preview.adjustments.map((adjustment) => <li key={adjustment}>{adjustment}</li>)}
+                </ul>
+              </details>
+            ) : null}
             <div>
               <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Muscle frequency</div>
               <div className="mt-2 flex flex-wrap gap-2">
