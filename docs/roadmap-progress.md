@@ -12,6 +12,8 @@ Updated September 3, 2026. Scope: food, lifting, training splits, and the sugges
 
 R3 replaces the separate accept-then-complete flow with a visible suggested draft and one explicit confirmation. An unconfirmed suggestion is not a completed set. It also separates previous, target, entered, and logged values, makes advanced actions secondary, exposes exercise-specific increments, and uses actual elapsed time rather than a completion-based estimate.
 
+Committed and pushed as `9e534b73`.
+
 Validation covers suggested values, partial edits, invalid loads, bodyweight sets, pause/resume, undo, reload, and pain constraints. Browser checks confirmed one-tap logging of an unchanged 60 lb × 6 target, preserved partial inputs, blocked invalid reps, paused input locks, rest/undo, exact completed-work totals, and editable Stop checks. The workout rows fit a 375px viewport without clipped controls.
 
 ## Remaining work, in order
@@ -28,8 +30,14 @@ Validation covers suggested values, partial edits, invalid loads, bodyweight set
 - R1: 91 automated tests, type checking, production build, and mobile food workflow checks passed.
 - R2: 112 automated tests, type checking, and production build passed.
 - R4: 123 automated tests, type checking, and production build passed. Browser checks verified exact meal totals, date-specific additive copy, whole-batch undo, reload persistence, and collision-safe meal restoration at a 375px viewport.
-- R3: 145 automated tests, type checking, and production build passed in the working tree; the exact staged release is checked again before its commit. Independent callback checks also verified that a safety-constrained visible target, not an older frozen load, is the value recorded on confirmation.
+- R3: 145 automated tests, type checking, and production build passed from the exact staged release. Independent callback checks also verified that a safety-constrained visible target, not an older frozen load, is the value recorded on confirmation.
 - Commits are pushed to the existing `main` release pipeline. A push is not itself proof that the public production alias has updated; deployment status is checked separately.
 - Pre-existing unrelated changes remain outside these release batches.
 
 The audit's claims about likely user preference remain expert judgments. No competitor timing, retention improvement, or native-device reliability has been measured by these implementation checks.
+
+## R6 first safeguard: conflicting local saves
+
+Two-tab testing exposed whole-state overwrites from stale tabs, including a development refresh of an older tab. The persistence boundary now compares the exact last-read/saved value before replacing it. A conflict pauses saving and editing in that tab, offers a local JSON copy, and requires explicit reload of the latest saved data. Reset cannot erase the unsaved copy while a conflict is active. Read failures are not treated as an empty store.
+
+Eleven persistence regression tests cover stale writes, identical-content no-ops, deletion/creation conflicts, and read/write failures. Browser verification showed a new food log survives a second tab's stale update and explicit reload. This is not account sync, an import/restore workflow, or a guarantee against truly simultaneous cross-tab transactions: localStorage has no atomic compare-and-swap. Transactional storage or cross-tab locking remains part of R6.

@@ -113,6 +113,7 @@ import { clearExercisePainFlags, exerciseHistoryMatches, exercisePreferenceKey, 
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
+import { optimisticWriteLocalState, readLocalState } from "./local_state_persistence";
 import {
   bodyweightLocalDateKey,
   mergeBodyweightHistory,
@@ -7288,10 +7289,13 @@ function MoreView({
 }
 
 export default function App() {
+  const [initialStorageRead] = useState(() => readLocalState({ getItem: key => window.localStorage.getItem(key) }, STORAGE_KEY));
+  const persistedRawRef = React.useRef<string | null | undefined>(initialStorageRead.status === "read" ? initialStorageRead.raw : undefined);
   const [state, setState] = useState<AppState>(() => loadState());
   const [nutritionDate, setNutritionDate] = useState(() => foodDiaryDateKey(new Date()));
   const [activeView, setActiveView] = useState<ViewId>(() => initialView());
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [storageConflict, setStorageConflict] = useState(false);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const [showResetPrompt, setShowResetPrompt] = useState(false);
   const scrollViewportRef = React.useRef<HTMLDivElement | null>(null);
@@ -7313,15 +7317,65 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (storageConflict) return;
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      setPersistenceError(null);
+      if (persistedRawRef.current === undefined) {
+        setPersistenceError("Saved data could not be read. This tab will not replace it. Reload when device storage is available.");
+        return;
+      }
+      const result = optimisticWriteLocalState({
+        storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
+        key: STORAGE_KEY,
+        expectedRaw: persistedRawRef.current,
+        nextRaw: JSON.stringify(state),
+      });
+      if (result.status === "saved" || result.status === "unchanged") {
+        persistedRawRef.current = result.baselineRaw;
+        setPersistenceError(null);
+      } else if (result.status === "conflict") {
+        setStorageConflict(true);
+        setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
+      } else {
+        setPersistenceError("Changes are visible now, but this device could not save them for the next app launch.");
+      }
     } catch {
       setPersistenceError("Changes are visible now, but this device could not save them for the next app launch.");
     }
+  }, [state, storageConflict]);
+
+  useEffect(() => {
     document.documentElement.classList.toggle("dark", state.theme === "dark");
     document.documentElement.style.colorScheme = state.theme;
-  }, [state]);
+  }, [state.theme]);
+
+  useEffect(() => {
+    const checkForNewerSave = () => {
+      if (persistedRawRef.current === undefined) return;
+      const current = readLocalState({ getItem: key => window.localStorage.getItem(key) }, STORAGE_KEY);
+      if (current.status === "read" && current.raw !== persistedRawRef.current) {
+        setStorageConflict(true);
+        setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
+      }
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === STORAGE_KEY || event.key === null) checkForNewerSave();
+    };
+    window.addEventListener("storage", handleStorage);
+    window.addEventListener("focus", checkForNewerSave);
+    return () => {
+      window.removeEventListener("storage", handleStorage);
+      window.removeEventListener("focus", checkForNewerSave);
+    };
+  }, []);
+
+  const downloadTabCopy = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `bodypilot-tab-copy-${foodDiaryDateKey(new Date())}.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   useEffect(() => {
     const timer = state.restTimer;
@@ -7471,12 +7525,13 @@ export default function App() {
                 variant="outline"
                 size="sm"
                 className="gap-2"
+                disabled={storageConflict}
                 onClick={() => setState((prev) => ({ ...prev, theme: prev.theme === "dark" ? "light" : "dark" }))}
               >
                 <Settings2 className="h-4 w-4" />
                 {state.theme === "dark" ? "Light" : "Dark"}
               </Button>
-              <Button variant="ghost" size="sm" className="gap-2" onClick={() => setShowResetPrompt(true)}>
+              <Button variant="ghost" size="sm" className="gap-2" disabled={storageConflict} onClick={() => setShowResetPrompt(true)}>
                 <RotateCcw className="h-4 w-4" />
                 Reset
               </Button>
@@ -7489,9 +7544,9 @@ export default function App() {
               className="mb-4 flex items-start justify-between gap-3 rounded-[18px] border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-950 dark:border-rose-400/30 dark:bg-rose-400/10 dark:text-rose-100"
             >
               <span>{persistenceError}</span>
-              <button type="button" className="shrink-0" onClick={() => setPersistenceError(null)} aria-label="Dismiss save warning">
+              {!storageConflict ? <button type="button" className="shrink-0" onClick={() => setPersistenceError(null)} aria-label="Dismiss save warning">
                 <X className="h-4 w-4" />
-              </button>
+              </button> : null}
             </div>
           ) : null}
 
@@ -7507,11 +7562,22 @@ export default function App() {
             </div>
           ) : null}
 
+          {storageConflict ? (
+            <Card>
+              <CardContent className="grid gap-3 p-5">
+                <h2 className="text-lg font-semibold">Open the latest saved data</h2>
+                <p className="text-sm text-slate-600 dark:text-slate-300">Reloading replaces this tab's unsaved changes with the saved version. Download this tab's copy first if you need to keep it. The copy is a local JSON record, not a cloud backup.</p>
+                <Button variant="outline" className="min-h-11" onClick={downloadTabCopy}>Download this tab's copy</Button>
+                <Button className="min-h-11" onClick={() => window.location.reload()}>Reload saved data</Button>
+              </CardContent>
+            </Card>
+          ) : <>
           {activeView === "home" ? <HomeView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "today" ? <TodayView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "food" ? <FoodView state={state} model={model} setState={setState} /> : null}
           {activeView === "training" ? <TrainingView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "more" ? <MoreView state={state} model={model} setState={setState} goTo={goTo} /> : null}
+          </>}
         </section>
       </div>
 
@@ -7536,7 +7602,7 @@ export default function App() {
         </div>
       </nav>
 
-      {showResetPrompt ? (
+      {showResetPrompt && !storageConflict ? (
         <div className="fixed inset-0 z-[90] grid items-end bg-slate-950/65 p-3 backdrop-blur-sm sm:place-items-center" role="presentation">
           <div
             role="dialog"
@@ -7566,6 +7632,7 @@ export default function App() {
               <Button
                 className="bg-rose-600 text-white hover:bg-rose-700"
                 onClick={() => {
+                  if (storageConflict) return;
                   setState(defaultState);
                   setShowResetPrompt(false);
                   setNotificationNotice(null);
