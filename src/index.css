@@ -934,3 +934,459 @@ html:not(.dark) .app-shell-mobile-safe [class*="text-slate-500"] {
 .app-shell-mobile-safe section.rounded-3xl[class*="border"] {
   border-radius: 8px;
 }
+
+/* Core workspace: a dark, compact instrument panel. Legacy view rules above
+   remain available; these overrides are scoped to the active application. */
+:root {
+  color-scheme: dark;
+  color: #eef1f4;
+  background: #111316;
+  font-family: "Inter", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+html,
+html.dark {
+  color-scheme: dark;
+  background: #111316;
+  scrollbar-color: #424952 #171b20;
+}
+
+body,
+html.dark body {
+  background: #111316;
+  color: #eef1f4;
+  background-attachment: scroll;
+}
+
+body::before,
+body::after,
+html.dark body::before,
+html.dark body::after {
+  content: none;
+}
+
+html .ai-app-shell {
+  --surface: #191d22;
+  --surface-strong: #20252b;
+  --surface-muted: #15191e;
+  --surface-border: #30363e;
+  --surface-border-strong: #48525d;
+  --surface-shadow: none;
+  --surface-shadow-soft: none;
+  --surface-shadow-tight: none;
+  --view-accent: #70d5e1;
+  --view-accent-2: #6ad7ae;
+  --view-ink: #b3eef3;
+  --view-soft: #20383d;
+  --view-soft-2: #20382e;
+  --view-wash: rgba(112, 213, 225, 0.07);
+  --view-wash-2: rgba(106, 215, 174, 0.06);
+  --view-line: #375d63;
+  --view-sheen: transparent;
+  --status-success: #6ad7ae;
+  --status-warning: #e3bc72;
+  --status-danger: #ee929e;
+  --status-info: #8dccf0;
+  --brand-bp-cyan: #70d5e1;
+  --brand-bp-green: #6ad7ae;
+  --brand-bp-ink: #102025;
+  --core-radius: 14px;
+  --core-text-muted: #a4adb8;
+  color: #eef1f4;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+html .ai-app-shell > .mx-auto {
+  gap: 16px;
+  max-width: 1400px;
+}
+
+html .ai-app-shell :is(
+  .premium-surface, .premium-soft-surface, .premium-chart-surface,
+  .premium-view-header, .premium-sidebar, .premium-action-panel,
+  .premium-mini-card, .premium-context-chip, .premium-tabs-surface,
+  .view-story-deck, .view-story-hero, .view-story-stat,
+  .ai-hero-panel, .dashboard-command-hero, .mobile-command-strip
+) {
+  border-color: var(--surface-border);
+  border-radius: var(--core-radius);
+  background: var(--surface);
+  color: #eef1f4;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+html .ai-app-shell :is(
+  .premium-surface, .premium-chart-surface, .premium-view-header,
+  .premium-sidebar, .view-story-deck, .ai-hero-panel,
+  .dashboard-command-hero
+)::before,
+html .ai-app-shell .ai-hero-panel::after {
+  content: none;
+}
+
+html .ai-app-shell .view-ambient-field {
+  background: none;
+}
+
+html .ai-app-shell.app-shell-mobile-safe :is(div, section, aside)[class*="rounded-"][class*="border"]:not(.rounded-full) {
+  border-radius: var(--core-radius);
+}
+
+/* Match the existing CardHeader/CardContent primitives without changing their API. */
+html .ai-app-shell .premium-surface > :is(.p-6, .p-5, .p-4) {
+  padding: 14px 16px;
+}
+
+html .ai-app-shell .premium-surface > .pb-4 {
+  padding-bottom: 10px;
+}
+
+html .ai-app-shell .premium-surface > .pt-0 {
+  padding-top: 0;
+}
+
+html .ai-app-shell :is(.premium-surface.p-4, .premium-mini-card, .ai-hero-panel, .view-story-deck) {
+  padding: 14px 16px;
+}
+
+html .ai-app-shell .ai-content > header {
+  margin-bottom: 12px;
+  min-height: 44px;
+}
+
+html .ai-app-shell .ai-content > .grid {
+  gap: 12px;
+}
+
+html .ai-app-shell .ai-content :is(.gap-5, .gap-6) {
+  gap: 16px;
+}
+
+html .ai-app-shell .ai-content :is(h1, h2, h3).text-3xl,
+html .ai-app-shell .ai-hero-panel h1 {
+  font-size: 1.4rem;
+  line-height: 1.3;
+}
+
+html .ai-app-shell .ai-content :is(h1, h2, h3).text-2xl {
+  font-size: 1.25rem;
+  line-height: 1.35;
+}
+
+html .ai-app-shell .ai-hero-panel :is(.mt-5, .mt-7, .mt-8) {
+  margin-top: 12px;
+}
+
+html .ai-app-shell :is(.text-slate-500, .dark\:text-slate-400) {
+  color: var(--core-text-muted);
+}
+
+html .ai-app-shell :is(.text-slate-600, .dark\:text-slate-300) {
+  color: #c1c8d0;
+}
+
+html .ai-app-shell :is(.text-slate-950, .dark\:text-slate-100, .dark\:text-white) {
+  color: #eef1f4;
+}
+
+html .ai-app-shell .premium-input,
+html .ai-app-shell select,
+html .ai-app-shell textarea {
+  min-height: 44px;
+  border: 1px solid #414a55;
+  border-radius: 9px;
+  background: #13171c;
+  color: #f2f5f7;
+  box-shadow: none;
+  font-size: 16px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+}
+
+html .ai-app-shell .premium-input::placeholder,
+html .ai-app-shell textarea::placeholder {
+  color: #929da9;
+}
+
+html .ai-app-shell :is(input, select, textarea) {
+  accent-color: var(--view-accent);
+  caret-color: var(--view-accent);
+  color-scheme: dark;
+}
+
+html .ai-app-shell :is(.premium-input, select, textarea):focus-visible {
+  border-color: var(--view-accent);
+  background: #13171c;
+  outline: 2px solid var(--view-accent);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+html .ai-app-shell :is(
+  .premium-button-primary, .premium-button-outline,
+  .premium-button-secondary, .premium-button-ghost
+) {
+  min-height: 44px;
+  height: auto;
+  border-radius: 10px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 600;
+  box-shadow: none;
+  transform: none;
+}
+
+html .ai-app-shell .premium-button-primary {
+  border-color: var(--view-accent);
+  background: var(--view-accent);
+  color: #10252a;
+}
+
+html .ai-app-shell .premium-button-primary:hover:not(:disabled) {
+  background: #91e1e9;
+  filter: none;
+  transform: none;
+}
+
+html .ai-app-shell .premium-button-primary[class*="bg-rose-"] {
+  border-color: #e38391;
+  background: #e38391;
+  color: #2d1017;
+}
+
+html .ai-app-shell :is(.premium-button-outline, .premium-button-secondary) {
+  border-color: #414a55;
+  background: #222830;
+  color: #e4e9ed;
+}
+
+html .ai-app-shell .premium-button-ghost {
+  background: transparent;
+  color: #bdc7d0;
+}
+
+html .ai-app-shell .premium-button-ghost[class*="text-rose-"] {
+  color: #ee929e;
+}
+
+html .ai-app-shell :is(.premium-button-outline, .premium-button-secondary, .premium-button-ghost):hover:not(:disabled) {
+  border-color: #667482;
+  background: #2d353e;
+  color: #f2f5f7;
+}
+
+html .ai-app-shell :is(button, summary, a):focus-visible {
+  outline: 2px solid var(--view-accent);
+  outline-offset: 3px;
+}
+
+html .ai-app-shell summary {
+  min-height: 44px;
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+
+html .ai-app-shell .premium-hover-lift:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+html .ai-app-shell :is(.premium-badge-default, .premium-badge-secondary, .premium-badge-outline) {
+  border-color: #3b454f;
+  border-radius: 6px;
+  background: #222a31;
+  color: #d0dae2;
+  box-shadow: none;
+  font-weight: 500;
+}
+
+html .ai-app-shell [class*="premium-badge-"][class*="text-emerald-"] {
+  border-color: #355c4b;
+  background: #20362d;
+  color: #a0e4bf;
+}
+
+html .ai-app-shell [class*="premium-badge-"][class*="text-amber-"] {
+  border-color: #685637;
+  background: #372f23;
+  color: #edcc90;
+}
+
+html .ai-app-shell [class*="premium-badge-"][class*="text-rose-"] {
+  border-color: #6d414a;
+  background: #3b272e;
+  color: #f1a6b0;
+}
+
+html .ai-app-shell .premium-progress-track {
+  background: #313942;
+}
+
+html .ai-app-shell .premium-progress-fill {
+  background: var(--view-accent);
+}
+
+html .ai-app-shell .bodypilot-logo-mark {
+  background: #223c42;
+  box-shadow: none;
+}
+
+html .ai-app-shell .bodypilot-logo-mark::before,
+html .ai-app-shell .bodypilot-logo-mark::after {
+  content: none;
+}
+
+html .ai-app-shell .mobile-control-glass {
+  border-color: #3c454f;
+  border-radius: 16px;
+  background: #1c2228;
+  box-shadow: 0 2px 12px #0005;
+  backdrop-filter: none;
+}
+
+html .ai-app-shell .mobile-dock button {
+  min-height: 48px;
+  border-radius: 10px;
+  color: #aab5bf;
+}
+
+html .ai-app-shell .mobile-dock button:is([aria-current="page"], [class*="dark:bg-white "]),
+html .ai-app-shell :is(.mobile-dock-active, .core-nav-item[aria-current="page"]) {
+  border-color: #3a626a;
+  background: #233d43;
+  color: #a8eaf1;
+  box-shadow: none;
+}
+
+html .ai-app-shell .workout-action-dock {
+  bottom: calc(4.75rem + env(safe-area-inset-bottom));
+}
+
+/* Compact semantic hooks for the core header, next action, and daily totals. */
+.core-header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.core-dashboard {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.core-next-workout {
+  padding: 0;
+  border: 1px solid #37535a;
+  border-radius: var(--core-radius);
+  background: #1b272c;
+}
+
+.core-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--surface-border);
+  border-radius: var(--core-radius);
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.core-metric-strip > * {
+  min-width: 0;
+  padding: 12px;
+}
+
+.core-metric-strip > * + * {
+  border-left: 1px solid var(--surface-border);
+}
+
+.core-section-title {
+  margin: 0;
+  color: #e5ebef;
+  font-size: 14px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+
+.core-nav-item {
+  min-height: 44px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: #aab5bf;
+}
+
+@media (min-width: 1024px) {
+  html .ai-app-shell > .mx-auto {
+    padding: 16px;
+  }
+
+  html .ai-app-shell > .mx-auto > aside {
+    width: 188px;
+  }
+
+  html .ai-app-shell .premium-sidebar {
+    top: 16px;
+    padding: 12px;
+  }
+
+  html .ai-app-shell .premium-sidebar nav button {
+    min-height: 48px;
+    padding: 8px;
+  }
+
+  html .ai-app-shell .workout-action-dock {
+    bottom: 12px;
+  }
+}
+
+@media (max-width: 1023px) {
+  /* Use document scrolling, not a second clipped viewport above the keyboard. */
+  html .ai-app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  html .ai-app-shell > .mx-auto {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    padding: 12px 12px 0 !important;
+  }
+
+  html .ai-app-shell .ai-content {
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+  }
+
+  html .ai-app-shell .ai-content:has(.workout-action-dock) {
+    padding-bottom: calc(10.5rem + env(safe-area-inset-bottom));
+  }
+
+  html .ai-app-shell .mobile-dock {
+    bottom: 0;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  }
+
+  html .ai-app-shell .mobile-dock .mobile-control-glass {
+    width: min(480px, calc(100vw - 24px)) !important;
+    max-width: calc(100vw - 24px) !important;
+    padding: 4px;
+  }
+
+  html .ai-app-shell .premium-surface > :is(.p-6, .p-5, .p-4),
+  html .ai-app-shell :is(.premium-surface.p-4, .premium-mini-card, .ai-hero-panel) {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+}

@@ -1,10 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark" style="color-scheme: dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#f8fbff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#020617" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#0b1017" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="BodyPilot" />
@@ -17,20 +16,9 @@
     <title>BodyPilot</title>
     <style>
       :root {
-        color-scheme: light;
-        --boot-bg: #f8fafc;
-        --boot-panel: rgba(255, 255, 255, 0.92);
-        --boot-border: rgba(15, 23, 42, 0.08);
-        --boot-text: #0f172a;
-        --boot-subtle: #64748b;
-        --boot-track: rgba(15, 23, 42, 0.08);
-        --boot-fill: #0f172a;
-      }
-
-      html.dark {
         color-scheme: dark;
-        --boot-bg: #020617;
-        --boot-panel: rgba(15, 23, 42, 0.88);
+        --boot-bg: #0b1017;
+        --boot-panel: #121a24;
         --boot-border: rgba(255, 255, 255, 0.12);
         --boot-text: #e2e8f0;
         --boot-subtle: #94a3b8;
@@ -77,11 +65,11 @@
 
       .boot-card {
         width: min(360px, calc(100vw - 48px));
-        border-radius: 28px;
+        border-radius: 14px;
         border: 1px solid var(--boot-border);
         background: var(--boot-panel);
         box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
-        padding: 28px;
+        padding: 20px;
         text-align: center;
         backdrop-filter: blur(18px);
       }
@@ -155,29 +143,6 @@
         }
       }
     </style>
-    <script>
-      (function () {
-        try {
-          document.body && document.body.setAttribute("data-app-ready", "false");
-          var saved =
-            window.localStorage.getItem("bodypilot-ai-v2") ||
-            window.localStorage.getItem("bodypilot-v1") ||
-            window.localStorage.getItem("stage-prep-elite-v2");
-          if (!saved) return;
-          var parsed = JSON.parse(saved);
-          if (parsed && (parsed.theme === "dark" || parsed.appTheme === "dark")) {
-            document.documentElement.classList.add("dark");
-            document.documentElement.style.colorScheme = "dark";
-          } else {
-            document.documentElement.classList.remove("dark");
-            document.documentElement.style.colorScheme = "light";
-          }
-        } catch (error) {
-          document.documentElement.classList.remove("dark");
-          document.documentElement.style.colorScheme = "light";
-        }
-      })();
-    </script>
   </head>
   <body data-app-ready="false">
     <div id="boot-shell" aria-hidden="true">
@@ -186,7 +151,7 @@
           <img src="/app-icon.svg" alt="" />
         </div>
         <h1 class="boot-title">Loading BodyPilot</h1>
-        <p class="boot-copy">Building your plan.</p>
+        <p class="boot-copy">Opening your workspace.</p>
         <div class="boot-bar"><span></span></div>
       </div>
     </div>

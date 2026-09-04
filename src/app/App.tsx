@@ -125,7 +125,10 @@ import { clearExercisePainFlags, exerciseHistoryMatches, exercisePermitsZeroLoad
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
 import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
-import { optimisticWriteLocalState, readLocalState } from "./local_state_persistence";
+import { createWeightMacroSettings } from "./weight_macro_engine";
+import { acceptedTrackerTarget, buildTrackerProposal, decideTrackerProposal, foodDaySignature, normalizeTrackerProgram, trackerFoodDayComplete, type WeightMacroProgram, type TrackerContext } from "./weight_macro_program";
+import { WeightMacroTrackerPanel } from "./components/WeightMacroTrackerPanel";
+import { createQueuedStatePersistence, type StateLockManager, type TransactionalStateWriteResult } from "./transactional_state_persistence";
 import { backupNormalizationChanges, validateBackupState, type BackupState } from "./local_backup";
 import { loadAppStateSafely } from "./app_state_storage";
 import { BackupRestorePanel } from "@/components/shared/BackupRestorePanel";
@@ -285,6 +288,7 @@ type AppState = {
   heightIn: number;
   bodyWeightLb: number;
   bodyWeightHistory: BodyweightHistoryEntry[];
+  trackerProgram: WeightMacroProgram | null;
   targetWeightLb: number;
   sessionsPerWeek: number;
   sessionMinutes: number;
@@ -361,7 +365,8 @@ type SplitModel = {
 };
 
 type PlanModel = {
-  readiness: number;
+  readiness: number | null;
+  recoveryEvidenceCount: number;
   maintenanceCalories: number;
   macros: MacroPlan;
   baseSplit: SplitModel;
@@ -533,6 +538,7 @@ export const defaultState: AppState = {
   heightIn: 70,
   bodyWeightLb: 185,
   bodyWeightHistory: [],
+  trackerProgram: null,
   targetWeightLb: 178,
   sessionsPerWeek: 5,
   sessionMinutes: 60,
@@ -2285,6 +2291,7 @@ export const normalizeAppState = (parsed: Record<string, unknown>, storedPayload
       heightIn: readClampedNumber(parsed.heightIn, defaultState.heightIn, 48, 90),
       bodyWeightLb: readClampedNumber(parsed.bodyWeight ?? parsed.bodyWeightLb, defaultState.bodyWeightLb, 70, 500),
       bodyWeightHistory,
+      trackerProgram: normalizeTrackerProgram(parsed.trackerProgram),
       targetWeightLb: readClampedNumber(parsed.targetWeightLb ?? parsed.targetStageWeightLb, defaultState.targetWeightLb, 70, 500),
       sessionsPerWeek: Math.round(readClampedNumber(parsed.sessionsPerWeek ?? parsed.trainingDaysPerWeek, defaultState.sessionsPerWeek, 3, 6)),
       sessionMinutes: Math.round(readClampedNumber(parsed.sessionMinutes, defaultState.sessionMinutes, 20, 150)),
@@ -2365,7 +2372,8 @@ export const builderStartTimestamp = (startDate: string): string | null => {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 };
 
-const readinessTone = (score: number) => {
+const readinessTone = (score: number | null) => {
+  if (score === null) return "text-slate-300";
   if (score >= 82) return "text-emerald-600 dark:text-emerald-300";
   if (score >= 68) return "text-emerald-600 dark:text-emerald-300";
   if (score >= 52) return "text-amber-600 dark:text-amber-300";
@@ -2393,20 +2401,21 @@ export const computePlan = (savedState: AppState, diaryDate: string): PlanModel 
   const activityFactor = clamp(1.28 + state.sessionsPerWeek * 0.045 + state.steps / 100000, 1.35, 1.78);
   const maintenanceCalories = roundTo(bmr * activityFactor, 25);
   const goal = goals[state.goal] ?? goals.recomposition;
-  const recoveryPenalty = state.sleepHours < 6.5 || state.soreness >= 8 ? 120 : 0;
-  const calories = roundTo(maintenanceCalories + goal.calorieShift - recoveryPenalty, 25);
-  const protein = roundTo(state.bodyWeightLb * goal.proteinPerLb, 5);
-  const fats = roundTo(clamp(state.bodyWeightLb * 0.32, 45, 95), 5);
-  const carbs = Math.max(90, roundTo((calories - protein * 4 - fats * 9) / 4, 5));
-  const readiness = Math.round(
-    clamp(
-      50 + (state.sleepHours - 6.5) * 9 + (state.energy - 5) * 6 - (state.soreness - 5) * 5 + (state.steps >= 7000 ? 4 : -5),
-      18,
-      96
-    )
+  const accepted = acceptedTrackerTarget(state.trackerProgram, diaryDate);
+  const calories = accepted?.calories ?? roundTo(maintenanceCalories + goal.calorieShift, 25);
+  const protein = accepted?.protein ?? roundTo(state.bodyWeightLb * goal.proteinPerLb, 5);
+  const fats = accepted?.fat ?? roundTo(clamp(state.bodyWeightLb * 0.32, 45, 95), 5);
+  const carbs = accepted?.carbs ?? Math.max(90, roundTo((calories - protein * 4 - fats * 9) / 4, 5));
+  const recoveryEvidence = Object.values(state.recoveryCheckins).filter(checkin =>
+    !checkin.skipped && Number.isFinite(Date.parse(checkin.checkedAt)) &&
+    foodDiaryDateKey(new Date(checkin.checkedAt)) === diaryDate
   );
+  const readiness = recoveryEvidence.length
+    ? Math.round(recoveryEvidence.reduce((sum, checkin) => sum + checkin.readiness, 0) / recoveryEvidence.length * 25)
+    : null;
+  const painFlag = recoveryEvidence.some(checkin => checkin.jointPain >= 3) || state.painfulExercises.length > 0;
   const programmedTargetRir = targetRirForWeek(state.currentWeek, state.mesoLengthWeeks, state.deloadMode);
-  const targetRir = !state.deloadMode && readiness < 58 ? Math.max(programmedTargetRir, 2) : programmedTargetRir;
+  const targetRir = !state.deloadMode && readiness !== null && readiness < 58 ? Math.max(programmedTargetRir, 2) : programmedTargetRir;
   const baseSplit = state.customSplit
     ? {
         name: "Custom mesocycle",
@@ -2422,7 +2431,9 @@ export const computePlan = (savedState: AppState, diaryDate: string): PlanModel 
 
   const suggestions: Suggestion[] = [];
 
-  if (state.deloadMode) {
+  if (painFlag) {
+    suggestions.push({ id: "pain-constraint", label: "Training", title: "Review flagged movements", detail: "Pain flags take priority over progression. Review affected exercises before adding load.", action: "Review workout", view: "today", tone: "rose", Icon: Activity });
+  } else if (state.deloadMode) {
     suggestions.push({
       id: "deload",
       label: "Meso",
@@ -2433,7 +2444,7 @@ export const computePlan = (savedState: AppState, diaryDate: string): PlanModel 
       tone: "amber",
       Icon: Gauge,
     });
-  } else if (readiness < 58) {
+  } else if (readiness !== null && readiness < 58) {
     suggestions.push({
       id: "recover",
       label: "Recovery",
@@ -2449,7 +2460,7 @@ export const computePlan = (savedState: AppState, diaryDate: string): PlanModel 
       id: "push",
       label: "Training",
       title: `Week ${state.currentWeek}: ${targetRir} RIR`,
-      detail: `Progress load by ${state.weightIncrement} lb when reps land at target effort.`,
+      detail: readiness === null ? "Recovery not checked today. Follow the programmed sets; review each lift's evidence before progressing." : "Use each lift's logged performance and recovery check to review its next prescription.",
       action: "Open today",
       view: "today",
       tone: "emerald",
@@ -2484,24 +2495,12 @@ export const computePlan = (savedState: AppState, diaryDate: string): PlanModel 
     });
   }
 
-  if (state.steps < stepTarget * 0.72) {
-    suggestions.push({
-      id: "steps",
-      label: "Activity",
-      title: "Close the step gap",
-      detail: `${formatNumber(stepTarget - state.steps)} steps left to hit ${formatNumber(stepTarget)}.`,
-      action: "Open more",
-      view: "more",
-      tone: "violet",
-      Icon: Footprints,
-    });
-  }
-
   const trainingLoad =
-    readiness >= 82 ? "High output" : readiness >= 68 ? "Productive" : readiness >= 52 ? "Controlled" : "Recovery";
+    readiness === null ? "Not checked today" : painFlag ? "Review pain flags" : readiness >= 68 ? "Check-in recorded" : "Recovery flagged";
 
   return {
     readiness,
+    recoveryEvidenceCount: recoveryEvidence.length,
     maintenanceCalories,
     macros: {
       calories,
@@ -3741,11 +3740,48 @@ function WorkoutDateControl({ state, occurrence, title, setState, onMoved }: {
   </div>;
 }
 
+export function trackerContextFor(state: AppState, today: string): TrackerContext {
+  const from = new Date(Date.parse(`${today}T00:00:00Z`) - 13 * 86400000).toISOString().slice(0, 10);
+  const recent = (timestamp: string) => {
+    if (!Number.isFinite(Date.parse(timestamp))) return false;
+    const date = foodDiaryDateKey(new Date(timestamp));
+    return date >= from && date <= today;
+  };
+  return {
+    completedWorkouts: new Set(state.workoutHistory.filter(h => recent(h.completedAt)).map(h => h.sessionKey)).size,
+    recoveryFlags: Object.values(state.recoveryCheckins).filter(c => !c.skipped && recent(c.checkedAt) && (c.jointPain >= 3 || c.readiness <= 1 || c.performanceExpectation === "below")).length,
+  };
+}
+
+export function applyTrackerProgramUpdate(state: AppState, next: WeightMacroProgram | null): AppState {
+  if (next === state.trackerProgram) return state;
+  let bodyWeightHistory = state.bodyWeightHistory;
+  for (const check of next?.checkins ?? []) {
+    if (check.weight == null || check.weight <= 0) continue;
+    const previous = state.trackerProgram?.checkins.find(c => c.date === check.date);
+    // Unit conversion changes stored units, not the canonical measurement or its timestamp.
+    const onlyChangedUnits = previous && state.trackerProgram?.settings.weightUnit !== next.settings.weightUnit && previous.recordedAt === check.recordedAt;
+    if (onlyChangedUnits || (previous?.weight === check.weight && previous?.recordedAt === check.recordedAt)) continue;
+    bodyWeightHistory = upsertBodyweightForLocalDay(bodyWeightHistory, { date: check.date, weightLb: check.weight * (next.settings.weightUnit === "kg" ? 1 / 0.45359237 : 1), recordedAt: check.recordedAt ?? null });
+  }
+  return { ...state, trackerProgram: next, bodyWeightHistory };
+}
+
+function TrackerAppSection({ state, model, setState, compact = false }: {
+  state: AppState; model: PlanModel; setState: React.Dispatch<React.SetStateAction<AppState>>; compact?: boolean;
+}) {
+  const today = foodDiaryDateKey(new Date());
+  return <WeightMacroTrackerPanel program={state.trackerProgram} sources={state} today={today} compact={compact} context={trackerContextFor(state, today)}
+    initialSettings={createWeightMacroSettings({ startDate: today, startingWeight: state.bodyWeightLb, goalWeight: state.targetWeightLb,
+      startingCalories: model.macros.calories, proteinBasis: "Manual fixed grams", proteinGrams: model.macros.protein, fatGrams: model.macros.fats,
+      goalType: state.goal === "fat-loss" ? "Cut" : state.goal === "muscle-gain" ? "Gain" : state.goal === "recomposition" ? "Recomp" : "Maintain",
+      manualWeeklyRate: state.goal === "fat-loss" ? 0.005 : state.goal === "muscle-gain" ? 0.0025 : 0,
+      trainingDaysPerWeek: state.sessionsPerWeek })}
+    onUpdate={update => setState(prev => applyTrackerProgramUpdate(prev, update(prev.trackerProgram, prev)))} />;
+}
+
 function HomeView({
-  state,
-  model,
-  setState,
-  goTo,
+  state, model, setState, goTo,
 }: {
   state: AppState;
   model: PlanModel;
@@ -3755,235 +3791,74 @@ function HomeView({
   const nextWorkout = nextWorkoutFor(state, model.split.days);
   const today = activeSplitDay(model.split.days, state.activeDayId, state);
   const workoutWeek = nextWorkout.session?.weekNumber ?? nextWorkout.occurrence?.weekNumber ?? state.currentWeek;
-  const todayMuscles = today ? dayMuscleSummary(today) : "";
-  const todayProgress = today ? dayCompletionFor(today, { ...state, currentWeek: workoutWeek }, model.targetRir) : 0;
-  const todaySessionKey = nextWorkout.session?.sessionKey ?? nextWorkout.occurrence?.sessionKey ?? null;
-  const todaySession = todaySessionKey ? state.workoutSessions[todaySessionKey] ?? null : null;
-  const displayedTargetRir = todaySession?.exercises.flatMap(exercise => exercise.prescriptions)[0]?.targetRir ?? model.targetRir;
-  const openSession = nextWorkout.kind === "resume" ? nextWorkout.session : null;
-  const plannedSessionKeys = plannedSessionKeysForWeek(model.split.days, state.mesocycleId, state.currentWeek);
-  const completedKeys = completedSessionKeysForWeek(
-    state.workoutHistory,
-    state.mesocycleId,
-    state.currentWeek,
-    plannedSessionKeys
-  );
-  const completedThisWeek = completedKeys.size;
-  const skippedThisWeek = skippedSessionCountForWeek(
-    state.skippedWorkouts,
-    state.mesocycleId,
-    state.currentWeek,
-    completedKeys,
-    plannedSessionKeys
-  );
-  const weekProgress =
-    model.split.days.length > 0 ? Math.round(((completedThisWeek + skippedThisWeek) / model.split.days.length) * 100) : 0;
+  const sessionKey = nextWorkout.session?.sessionKey ?? nextWorkout.occurrence?.sessionKey ?? null;
+  const session = sessionKey ? state.workoutSessions[sessionKey] : null;
+  const completed = completedSessionKeysForWeek(state.workoutHistory, state.mesocycleId, state.currentWeek,
+    plannedSessionKeysForWeek(model.split.days, state.mesocycleId, state.currentWeek)).size;
   const startToday = () => {
-    if (openSession) {
-      setState((prev) => ({
-        ...prev,
-        currentWeek: openSession.weekNumber,
-        activeDayId: openSession.dayId,
-        deloadMode: openSession.weekNumber >= prev.mesoLengthWeeks,
-        workoutPaused: openSession.status === "paused",
-        mesoPaused: false,
-      }));
-    } else if (today) {
-      setState((prev) => ({ ...prev, currentWeek: workoutWeek, activeDayId: today.id, mesoPaused: false }));
-    } else {
-      goTo("training");
-      return;
-    }
+    if (!today) { goTo("training"); return; }
+    setState(prev => ({
+      ...prev, currentWeek: workoutWeek, activeDayId: today.id, mesoPaused: false,
+      deloadMode: workoutWeek >= prev.mesoLengthWeeks, workoutPaused: session?.status === "paused",
+    }));
     goTo("today");
   };
-  const workoutActionLabel = openSession
-    ? "Resume workout"
-    : today ? "Open next workout" : "Review training plan";
-
+  const latestWeight = summarizeBodyweightHistory(state.bodyWeightHistory).latest;
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_390px]">
-      <section className="ai-hero-panel overflow-hidden rounded-[34px] border border-white/70 p-5 shadow-[0_24px_70px_rgba(15,23,42,0.13)] dark:border-white/10 sm:p-6">
-        <div className="relative z-10">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="secondary" className="bg-white/72 text-slate-800 dark:bg-white/10 dark:text-slate-100">
-              <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-              AI plan
-            </Badge>
-            <Badge variant="outline" className="bg-white/54 dark:bg-white/5">
-              {goals[state.goal].label}
-            </Badge>
-          </div>
-
-          <div className="mt-5 max-w-3xl sm:mt-8">
-            <h1 className="text-3xl font-semibold tracking-normal text-slate-950 dark:text-white sm:text-5xl">
-              {model.primarySuggestion.title}
-            </h1>
-            {model.primarySuggestion.detail ? (
-              <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600 dark:text-slate-300">
-                {model.primarySuggestion.detail}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="mt-5 flex flex-col gap-3 sm:mt-7 sm:flex-row">
-            <Button size="lg" className="gap-2" onClick={startToday}>
-              <model.primarySuggestion.Icon className="h-4 w-4" />
-              {workoutActionLabel}
-            </Button>
-            <Button size="lg" variant="outline" className="gap-2" onClick={() => goTo("training")}>
-              <Dumbbell className="h-4 w-4" />
-              Training plan
-            </Button>
-          </div>
-
-          <div className="mt-7 grid gap-3 sm:grid-cols-3">
-            <StatCard label="Readiness" value={`${model.readiness}%`} detail={model.trainingLoad} Icon={Gauge} />
-            <StatCard
-              label="Macros"
-              value={formatNumber(model.macros.calories)}
-              detail={`${model.macros.protein}P / ${model.macros.carbs}C / ${model.macros.fats}F`}
-              Icon={Utensils}
-            />
-            <StatCard label="Split" value={model.split.name} detail={`${model.split.days.length} sessions`} Icon={Dumbbell} />
-          </div>
-        </div>
-      </section>
-
-      <div className="grid content-start gap-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <PlayCircle className="h-5 w-5 text-rose-500" />
-              {openSession ? "Workout in progress" : "Next workout"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            {today ? (
-              <>
-                <div>
-                  <div className="text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{today.focus}</div>
-                  <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">{todayMuscles}</div>
-                  <div className="mt-2 text-sm font-medium text-slate-600 dark:text-slate-300">
-                    {nextWorkout.occurrence?.scheduledDate ? `Scheduled ${nextWorkout.occurrence.scheduledDate}` : "Choose a workout date in Split"}
-                    {nextWorkout.kind === "planned" && nextWorkout.timing === "overdue" ? " · Not completed yet" : ""}
-                    {nextWorkout.kind === "planned" && nextWorkout.timing === "upcoming" ? " · Upcoming; open early if you choose" : ""}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                    <div className="text-[10px] font-semibold uppercase text-slate-500">Week</div>
-                    <div className="mt-1 text-sm font-semibold">{workoutWeek}/{state.mesoLengthWeeks}</div>
-                  </div>
-                  <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                    <div className="text-[10px] font-semibold uppercase text-slate-500">RIR</div>
-                    <div className="mt-1 text-sm font-semibold">{displayedTargetRir}</div>
-                  </div>
-                  <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                    <div className="text-[10px] font-semibold uppercase text-slate-500">Lifts</div>
-                    <div className="mt-1 text-sm font-semibold">{today.lifts.length}</div>
-                  </div>
-                  <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                    <div className="text-[10px] font-semibold uppercase text-slate-500">Expected</div>
-                    <div className="mt-1 text-sm font-semibold">{state.sessionMinutes} min</div>
-                  </div>
-                </div>
-                <div>
-                  <div className="flex items-center justify-between text-sm font-semibold">
-                    <span>Session</span>
-                    <span>{todayProgress}%</span>
-                  </div>
-                  <Progress value={todayProgress} className="mt-2" />
-                </div>
-                <Button className="gap-2" onClick={startToday}>
-                  <Dumbbell className="h-4 w-4" />
-                  {openSession
-                    ? "Resume sets"
-                    : todaySession?.status === "completed" || todayProgress === 100
-                      ? "Review workout"
-                      : "Open next workout"}
-                </Button>
-              </>
-            ) : (
-              <div className="rounded-[22px] border border-dashed border-slate-300 p-4 text-sm text-slate-500 dark:border-white/10 dark:text-slate-400">
-                {model.split.days.length ? "All workouts in this selected week are resolved. Review your split or choose the next week." : "Build a split to start training."}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <CalendarDays className="h-5 w-5 text-rose-500" />
-              Meso
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="flex items-center justify-between text-sm font-semibold">
-              <span>{model.split.name}</span>
-              <span>{weekProgress}% week</span>
-            </div>
-            <Progress value={weekProgress} />
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                {completedThisWeek} complete
-              </div>
-              <div className="rounded-[18px] border border-slate-200 bg-white/60 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
-                {skippedThisWeek} skipped
-              </div>
-            </div>
-            <Button variant="outline" className="gap-2" onClick={() => goTo("training")}>
-              <CalendarDays className="h-4 w-4" />
-              Open meso
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-lg">
-              <Settings2 className="h-5 w-5 text-rose-500" />
-              Plan inputs
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <Field label="Goal" helper={goals[state.goal].helper}>
-              <SelectField
-                value={state.goal}
-                onChange={(goal) => setState((prev) => ({ ...prev, goal }))}
-                options={goalOptions}
-              />
-            </Field>
-
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Bodyweight">
-                <Input
-                  type="number"
-                  value={state.bodyWeightLb}
-                  onChange={(event) =>
-                    setState((prev) => ({ ...prev, bodyWeightLb: updateNumber(event.target.value, prev.bodyWeightLb) }))
-                  }
-                />
-              </Field>
-              <Field label="Target">
-                <Input
-                  type="number"
-                  value={state.targetWeightLb}
-                  onChange={(event) =>
-                    setState((prev) => ({ ...prev, targetWeightLb: updateNumber(event.target.value, prev.targetWeightLb) }))
-                  }
-                />
-              </Field>
-            </div>
-          </CardContent>
-        </Card>
+    <div className="core-dashboard grid gap-3">
+      <div className="core-metric-strip">
+        <button type="button" className="text-left" onClick={() => goTo("food")}>
+          <span className="block text-xs text-slate-400">Calories remaining</span>
+          <strong className="block text-xl">{formatNumber(model.macros.remainingCalories)}</strong>
+          <span className="text-xs text-slate-400">of {formatNumber(model.macros.calories)} target</span>
+        </button>
+        <button type="button" className="text-left" onClick={() => goTo("food")}>
+          <span className="block text-xs text-slate-400">Protein remaining</span>
+          <strong className="block text-xl">{model.macros.remainingProtein}g</strong>
+          <span className="text-xs text-slate-400">{model.macros.protein}g target</span>
+        </button>
+        <button type="button" className="text-left" onClick={() => goTo("more")}>
+          <span className="block text-xs text-slate-400">Latest weigh-in</span>
+          <strong className="block text-xl">{latestWeight ? latestWeight.weightLb + " lb" : "—"}</strong>
+          <span className="text-xs text-slate-400">{latestWeight?.date ?? "Log your first"}</span>
+        </button>
       </div>
-
-      <section className="grid gap-4 xl:col-span-2 md:grid-cols-3">
-        {model.suggestions.slice(1, 4).map((item) => (
-          <SuggestionCard key={item.id} item={item} onAction={() => goTo(item.view)} />
-        ))}
-      </section>
+      <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1.25fr)_minmax(260px,1fr)]">
+        <Card className="core-next-workout">
+          <CardContent className="grid gap-3 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h1 className="core-section-title">{session && session.status !== "completed" ? "Continue workout" : "Next workout"}</h1>
+              <span className="text-xs text-slate-400">Week {workoutWeek}/{state.mesoLengthWeeks}</span>
+            </div>
+            {today ? <>
+              <div><h2 className="text-2xl font-semibold">{today.focus}</h2>
+                <p className="mt-1 text-sm text-slate-400">{dayMuscleSummary(today)}</p></div>
+              <p className="text-sm text-slate-300">{nextWorkout.occurrence?.scheduledDate ?? "Date not scheduled"}
+                {nextWorkout.kind === "planned" && nextWorkout.timing === "overdue" ? " · Not completed" : ""}
+                {nextWorkout.kind === "planned" && nextWorkout.timing === "upcoming" ? " · Upcoming" : ""}
+                {" · "}{today.lifts.length} lifts · {state.sessionMinutes} min</p>
+              <Button className="min-h-11 gap-2" onClick={startToday}><Dumbbell className="h-4 w-4" />
+                {session && session.status !== "completed" ? "Resume sets" : "Open workout"}</Button>
+            </> : <>
+              <p className="text-sm text-slate-300">All workouts in this selected week are resolved.</p>
+              <Button onClick={() => goTo("training")}>Review next week</Button>
+            </>}
+            <div className="flex items-center justify-between border-t border-white/10 pt-3 text-sm">
+              <span>{completed}/{model.split.days.length} workouts completed this week</span>
+              <Button variant="ghost" size="sm" onClick={() => goTo("training")}>Split</Button>
+            </div>
+          </CardContent>
+        </Card>
+        <Card><CardContent className="p-4">
+          <details className="text-sm text-slate-400">
+            <summary className="min-h-11 cursor-pointer"><span className="font-semibold text-slate-100">{model.primarySuggestion.title}</span><span className="mt-1 block text-xs">{model.trainingLoad} · Why this suggestion?</span></summary>
+            <p className="my-3 text-sm text-slate-300">{model.primarySuggestion.detail}</p>
+            <p>{model.recoveryEvidenceCount ? model.recoveryEvidenceCount + " muscle check-ins recorded today." : "No dated recovery check-in today; profile defaults are not observations."}
+              {" "}Your current training week and saved restrictions determine the programmed effort. Logged set results—not a generic readiness score—determine lift-specific progression.</p>
+          </details>
+        </CardContent></Card>
+      </div>
+      <TrackerAppSection state={state} model={model} setState={setState} compact />
     </div>
   );
 }
@@ -5719,6 +5594,19 @@ function FoodView({ state, model, setState }: {
     onSavedMealsChange={update => setState(prev => ({ ...prev, savedFoodMeals: update(prev.savedFoodMeals) }))}
     today={foodDiaryDateKey(new Date())}
     targets={{ calories: model.macros.calories, protein: model.macros.protein, carbs: model.macros.carbs, fat: model.macros.fats }}
+    targetsForDate={date => {
+      const target = acceptedTrackerTarget(state.trackerProgram, date);
+      return target ? { calories: target.calories, protein: target.protein, carbs: target.carbs, fat: target.fat } : null;
+    }}
+    targetDescription="Accepted weight-tracker targets for this date, including your saved training/rest-day cycling settings."
+    isDayComplete={date => trackerFoodDayComplete(state.trackerProgram, state.foodLog, date)}
+    onDayComplete={state.trackerProgram ? (date, complete) => setState(prev => {
+      if (!prev.trackerProgram || date > foodDiaryDateKey(new Date())) return prev;
+      const completeFoodDays = { ...prev.trackerProgram.completeFoodDays };
+      if (complete) completeFoodDays[date] = foodDaySignature(prev.foodLog, date);
+      else delete completeFoodDays[date];
+      return { ...prev, trackerProgram: { ...prev.trackerProgram, completeFoodDays } };
+    }) : undefined}
     legacyTotals={state.legacyNutritionTotals}
     onEntriesChange={update => setState(prev => ({ ...prev, foodLog: update(prev.foodLog) }))}
   />;
@@ -6972,6 +6860,7 @@ function MoreView({
 
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div className="xl:col-span-2"><TrackerAppSection state={state} model={model} setState={setState} /></div>
       <div className="xl:col-span-2">
         <WeeklyScheduler state={state} model={model} setState={setState} goTo={goTo} />
       </div>
@@ -6982,17 +6871,17 @@ function MoreView({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <Badge variant="secondary">Readiness</Badge>
-                <CardTitle className={`mt-3 text-5xl ${readinessTone(model.readiness)}`}>{model.readiness}%</CardTitle>
+                <CardTitle className="mt-2 text-lg">{model.trainingLoad}</CardTitle>
               </div>
               <Badge variant="outline" className="bg-white/60 dark:bg-white/[0.04]">
-                {model.trainingLoad}
+                {model.recoveryEvidenceCount} dated check-ins today
               </Badge>
             </div>
           </CardHeader>
           <CardContent className="grid gap-5">
             <div className="grid gap-3 md:grid-cols-3">
-              <StatCard label="Sleep" value={`${state.sleepHours.toFixed(1)}h`} detail={`${Math.round(sleepProgress)}% of 8h`} Icon={Moon} />
-              <StatCard label="Steps" value={formatNumber(state.steps)} detail={`${formatNumber(model.stepTarget)} target`} Icon={Footprints} />
+              <StatCard label="Profile sleep estimate" value={`${state.sleepHours.toFixed(1)}h`} detail="Undated setting, not today's log" Icon={Moon} />
+              <StatCard label="Profile steps estimate" value={formatNumber(state.steps)} detail="Undated activity assumption" Icon={Footprints} />
               <StatCard label="Target gap" value={`${distanceToTarget.toFixed(1)} lb`} detail="Current vs target" Icon={Activity} />
             </div>
 
@@ -7501,18 +7390,54 @@ export default function App() {
     storage: { getItem: key => window.localStorage.getItem(key) },
     key: STORAGE_KEY, legacyKeys: LEGACY_STORAGE_KEYS, defaultState, normalize: normalizeSavedAppState,
   }));
-  const persistedRawRef = React.useRef<string | null | undefined>(initialLoad.baselineRaw);
-  const [state, setState] = useState<AppState>(initialLoad.state);
+  const [state, setAppState] = useState<AppState>(initialLoad.state);
+  const [stateLocks] = useState<StateLockManager | null>(() => {
+    try {
+      const locks = typeof navigator !== "undefined" ? navigator.locks : null;
+      return locks && typeof locks.request === "function" ? locks : null;
+    }
+    catch { return null; }
+  });
+  const [persistence] = useState(() => initialLoad.baselineRaw === undefined ? null : createQueuedStatePersistence({
+    storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
+    key: STORAGE_KEY, locks: stateLocks, baselineRaw: initialLoad.baselineRaw,
+  }));
+  const mountedRef = React.useRef(true);
+  const restorePendingRef = React.useRef(false);
   const [loadProblem, setLoadProblem] = useState<string | null>(initialLoad.problem);
   const [nutritionDate, setNutritionDate] = useState(() => foodDiaryDateKey(new Date()));
   const [activeView, setActiveView] = useState<ViewId>(() => initialView());
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [storageConflict, setStorageConflict] = useState(false);
+  const [persistenceBlocked, setPersistenceBlocked] = useState<string | null>(() => !stateLocks
+    ? "Safe saving is unavailable in this browser. Editing and restore are paused; export a copy and reopen in a browser that supports Web Locks."
+    : null);
+  const [restorePending, setRestorePending] = useState(false);
+  const editingBlocked = storageConflict || Boolean(loadProblem) || Boolean(persistenceBlocked) || restorePending;
+  const editingBlockedRef = React.useRef(editingBlocked);
+  editingBlockedRef.current = editingBlocked;
+  const setState = React.useCallback<React.Dispatch<React.SetStateAction<AppState>>>((update) => {
+    if (!editingBlockedRef.current) setAppState(update);
+  }, []);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const [showResetPrompt, setShowResetPrompt] = useState(false);
   const scrollViewportRef = React.useRef<HTMLDivElement | null>(null);
   const viewScrollPositions = React.useRef<Partial<Record<ViewId, number>>>({});
   const model = useMemo(() => computePlan(state, nutritionDate), [state, nutritionDate]);
+  useEffect(() => {
+    if (editingBlocked || state.trackerProgram?.settings.adjustmentMode !== "Fully automatic") return;
+    const context = trackerContextFor(state, nutritionDate);
+    const proposal = buildTrackerProposal(state.trackerProgram, state, nutritionDate, context);
+    if (!proposal || proposal.blocked) return;
+    setState(prev => {
+      if (!prev.trackerProgram || prev.trackerProgram.settings.adjustmentMode !== "Fully automatic") return prev;
+      const currentContext = trackerContextFor(prev, nutritionDate);
+      try {
+        const trackerProgram = decideTrackerProposal(prev.trackerProgram, prev, proposal, "automatic", nutritionDate, new Date().toISOString(), currentContext);
+        return { ...prev, trackerProgram };
+      } catch { return prev; } // A stale automatic proposal waits for the next render's fresh evidence.
+    });
+  }, [state.trackerProgram, state.foodLog, state.bodyWeightHistory, state.workoutHistory, state.recoveryCheckins, nutritionDate, editingBlocked, setState]);
   const restTimerSession = state.restTimer
     ? state.workoutSessions[state.restTimer.sessionKey] ?? null
     : null;
@@ -7528,47 +7453,72 @@ export default function App() {
     return () => { window.clearInterval(interval); window.removeEventListener("focus", refreshDate); document.removeEventListener("visibilitychange", refreshDate); };
   }, []);
 
-  useEffect(() => {
-    if (storageConflict || loadProblem) return;
-    try {
-      if (persistedRawRef.current === undefined) {
-        setPersistenceError("Saved data could not be read. This tab will not replace it. Reload when device storage is available.");
-        return;
-      }
-      const result = optimisticWriteLocalState({
-        storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
-        key: STORAGE_KEY,
-        expectedRaw: persistedRawRef.current,
-        nextRaw: JSON.stringify(state),
-      });
-      if (result.status === "saved" || result.status === "unchanged") {
-        persistedRawRef.current = result.baselineRaw;
-        setPersistenceError(null);
-      } else if (result.status === "conflict") {
-        setStorageConflict(true);
-        setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
-      } else {
-        setPersistenceError("Changes are visible now, but this device could not save them for the next app launch.");
-      }
-    } catch {
-      setPersistenceError("Changes are visible now, but this device could not save them for the next app launch.");
+  const handlePersistenceResult = React.useCallback((result: TransactionalStateWriteResult) => {
+    if (!mountedRef.current || result.status === "cancelled") return;
+    if (result.status === "saved" || result.status === "unchanged") {
+      setPersistenceError(null);
+      return;
     }
-  }, [state, storageConflict, loadProblem]);
+    editingBlockedRef.current = true;
+    if (result.status === "conflict") {
+      setStorageConflict(true);
+      setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
+    } else {
+      const message = result.status === "unavailable" || (result.status === "error" && result.operation === "lock")
+        ? "Safe saving could not acquire a browser lock. Editing and restore are paused. Export this tab's copy, then reload. No unlocked save was attempted."
+        : "This device could not save your latest changes. Editing and restore are paused. Export this tab's copy before reloading to avoid losing unsaved edits.";
+      setPersistenceBlocked(message);
+      setPersistenceError(message);
+    }
+  }, []);
+
+  const checkForNewerSave = React.useCallback(() => {
+    if (!persistence || !mountedRef.current) return false;
+    const observation = persistence.observe();
+    if (observation.status === "current" || observation.status === "own-write-pending") return true;
+    persistence.halt();
+    editingBlockedRef.current = true;
+    if (observation.status === "conflict") {
+      setStorageConflict(true);
+      setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
+    } else {
+      const message = "Saved data could not be read. Editing and saving are paused. Export this tab's copy before reloading.";
+      setPersistenceBlocked(message);
+      setPersistenceError(message);
+    }
+    return false;
+  }, [persistence]);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", state.theme === "dark");
-    document.documentElement.style.colorScheme = state.theme;
-  }, [state.theme]);
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; persistence?.cancelPending(); };
+  }, [persistence]);
 
   useEffect(() => {
-    const checkForNewerSave = () => {
-      if (persistedRawRef.current === undefined) return;
-      const current = readLocalState({ getItem: key => window.localStorage.getItem(key) }, STORAGE_KEY);
-      if (current.status === "read" && current.raw !== persistedRawRef.current) {
-        setStorageConflict(true);
-        setPersistenceError("Another tab changed the saved data. Saving is paused here so this tab cannot replace those changes.");
-      }
-    };
+    if (editingBlockedRef.current || restorePendingRef.current || !persistence) return;
+    try {
+      void persistence.autosave(JSON.stringify(state)).then(result => {
+        handlePersistenceResult(result);
+        if (result.status === "saved" || result.status === "unchanged") checkForNewerSave();
+      }).catch(() => {
+        if (!mountedRef.current) return;
+        persistence.halt();
+        editingBlockedRef.current = true;
+        setPersistenceBlocked("Saving stopped unexpectedly. Export this tab's copy before reloading.");
+      });
+    } catch {
+      editingBlockedRef.current = true;
+      setPersistenceBlocked("This tab's data could not be prepared for saving. Editing is paused; export a copy before reloading.");
+    }
+  }, [state, persistence, editingBlocked, handlePersistenceResult, checkForNewerSave]);
+
+  useEffect(() => {
+    // Keep legacy theme data readable in backups; the interface is dark-only.
+    document.documentElement.classList.add("dark");
+    document.documentElement.style.colorScheme = "dark";
+  }, []);
+
+  useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === STORAGE_KEY || event.key === null) checkForNewerSave();
     };
@@ -7578,7 +7528,7 @@ export default function App() {
       window.removeEventListener("storage", handleStorage);
       window.removeEventListener("focus", checkForNewerSave);
     };
-  }, []);
+  }, [checkForNewerSave]);
 
   const downloadTabCopy = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }));
@@ -7589,8 +7539,8 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const restoreBackup = (raw: BackupState): { ok: boolean; message?: string } => {
-    if (storageConflict || persistedRawRef.current === undefined) {
+  const restoreBackup = async (raw: BackupState): Promise<{ ok: boolean; message?: string }> => {
+    if (storageConflict || persistenceBlocked || !persistence || restorePendingRef.current) {
       return { ok: false, message: "Reload the latest saved data before restoring a backup." };
     }
     try {
@@ -7600,20 +7550,22 @@ export default function App() {
       if (changes.length) {
         return { ok: false, message: `This file cannot be restored without changing its ${changes.slice(0, 3).join(", ")} records. Nothing was replaced. Keep the file for recovery.` };
       }
-      // Commit to storage first. A failed save must not replace the visible state.
-      const result = optimisticWriteLocalState({
-        storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
-        key: STORAGE_KEY, expectedRaw: persistedRawRef.current, nextRaw: JSON.stringify(restored),
-      });
-      if (result.status === "conflict") {
-        setStorageConflict(true);
-        return { ok: false, message: "Another tab changed the saved data. Reload before restoring so those changes are not overwritten." };
+      restorePendingRef.current = true;
+      editingBlockedRef.current = true;
+      setRestorePending(true);
+      // Invalidates old autosaves; only a successful locked write replaces the UI.
+      const result = await persistence.replace(JSON.stringify(restored));
+      handlePersistenceResult(result);
+      if (result.status !== "saved" && result.status !== "unchanged") {
+        return { ok: false, message: result.status === "conflict"
+          ? "Another tab changed the saved data. Reload before restoring so those changes are not overwritten."
+          : "Restore did not save. Your current data has not been replaced; keep both backup files and reload before trying again." };
       }
-      if (result.status === "error") {
-        return { ok: false, message: "This device could not save the backup. Your current data has not been replaced." };
+      if (!mountedRef.current) return { ok: false, message: "The view closed during restore. Reload to inspect the latest saved data." };
+      if (!checkForNewerSave()) {
+        return { ok: false, message: "The backup was written, but the latest saved data could not be verified afterward. Keep both backup files and reload to inspect the current saved version." };
       }
-      persistedRawRef.current = result.baselineRaw;
-      setState(restored);
+      setAppState(restored);
       setLoadProblem(null);
       setPersistenceError(null);
       setShowResetPrompt(false);
@@ -7621,11 +7573,14 @@ export default function App() {
       return { ok: true };
     } catch (cause) {
       return { ok: false, message: cause instanceof Error ? cause.message : "This backup could not be restored. Nothing was replaced." };
+    } finally {
+      restorePendingRef.current = false;
+      if (mountedRef.current) setRestorePending(false);
     }
   };
 
   useEffect(() => {
-    if (storageConflict || loadProblem) return undefined;
+    if (editingBlocked) return undefined;
     const timer = state.restTimer;
     if (!timer) return undefined;
     if (!restTimerSession) {
@@ -7654,10 +7609,10 @@ export default function App() {
       );
     }, remainingMs + 50);
     return () => window.clearTimeout(timeout);
-  }, [restTimerSession, setState, state.restTimer, storageConflict, loadProblem]);
+  }, [restTimerSession, setState, state.restTimer, editingBlocked]);
 
   useEffect(() => {
-    if (storageConflict || loadProblem) return undefined;
+    if (editingBlocked) return undefined;
     const timer = state.restTimer;
     if (!timer || !restTimerSession || restTimerSession.status === "paused" || timer.endsAt <= Date.now()) {
       setNotificationNotice(null);
@@ -7692,10 +7647,11 @@ export default function App() {
         console.warn("Unable to cancel the rest-timer notification.", error);
       });
     };
-  }, [restTimerExerciseName, restTimerSession?.status, state.restTimer, storageConflict, loadProblem]);
+  }, [restTimerExerciseName, restTimerSession?.status, state.restTimer, editingBlocked]);
 
   useEffect(() => {
     const syncViewFromHash = () => {
+      if (restorePendingRef.current) return;
       const value = window.location.hash.replace("#", "");
       if (viewItems.some((item) => item.id === value)) setActiveView(value as ViewId);
     };
@@ -7705,11 +7661,13 @@ export default function App() {
   }, []);
 
   const goTo = (view: ViewId) => {
-    if (scrollViewportRef.current) viewScrollPositions.current[activeView] = scrollViewportRef.current.scrollTop;
+    if (restorePendingRef.current) return;
+    viewScrollPositions.current[activeView] = window.scrollY || scrollViewportRef.current?.scrollTop || 0;
     setActiveView(view);
     window.history.replaceState(null, "", `#${view}`);
     window.requestAnimationFrame(() => {
       scrollViewportRef.current?.scrollTo({ top: viewScrollPositions.current[view] ?? 0, behavior: "auto" });
+      window.scrollTo({ top: viewScrollPositions.current[view] ?? 0, behavior: "auto" });
     });
   };
 
@@ -7719,36 +7677,28 @@ export default function App() {
   return (
     <main className="ai-app-shell app-shell-mobile-safe min-h-dvh text-slate-950 dark:text-slate-50">
       <div ref={scrollViewportRef} className="mx-auto flex w-full max-w-[1480px] gap-5 px-4 py-4 sm:px-5 lg:px-6 lg:py-6">
-        <aside className="hidden w-[294px] shrink-0 lg:block">
+        <aside className="hidden w-[188px] shrink-0 lg:block">
           <div className="premium-sidebar sticky top-6 p-4">
-            <BodyPilotLogo size="md" />
-            <div className="mt-5 rounded-[24px] border border-slate-200/70 bg-white/68 p-4 dark:border-white/10 dark:bg-white/[0.04]">
-              {loadProblem ? <p className="text-sm">Data recovery mode · automatic saving is paused.</p> : <>
-              <div className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">Readiness</div>
-              <div className={`mt-1 text-4xl font-semibold ${readinessTone(model.readiness)}`}>{model.readiness}%</div>
-              <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{model.primarySuggestion.title}</p>
-              </>}
-            </div>
-
+            <BodyPilotLogo size="md" showTagline={false} />
             <nav className="mt-5 space-y-2">
               {viewItems.map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => goTo(item.id)}
+                  aria-current={activeView === item.id ? "page" : undefined}
                   className={[
-                    "flex w-full items-center gap-3 rounded-2xl border px-3 py-3 text-left transition",
+                    "core-nav-item flex w-full items-center gap-2 rounded-xl border px-2 py-2 text-left transition",
                     activeView === item.id
                       ? "border-rose-200 bg-rose-50 text-rose-950 shadow-sm dark:border-rose-400/20 dark:bg-rose-400/10 dark:text-rose-100"
                       : "border-transparent text-slate-600 hover:border-slate-200 hover:bg-white/72 dark:text-slate-300 dark:hover:border-white/10 dark:hover:bg-white/[0.05]",
                   ].join(" ")}
                 >
-                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-current/10 bg-white/72 dark:bg-white/[0.04]">
+                  <div className="grid h-7 w-7 shrink-0 place-items-center">
                     <item.Icon className="h-5 w-5" />
                   </div>
                   <div className="min-w-0">
                     <div className="text-sm font-semibold">{item.label}</div>
-                    <div className="text-xs opacity-70">{item.helper}</div>
                   </div>
                 </button>
               ))}
@@ -7757,35 +7707,21 @@ export default function App() {
         </aside>
 
         <section className="ai-content min-w-0 flex-1 lg:pb-0">
-          <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+          <header className="core-header mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3 lg:hidden">
-              <BodyPilotLogo size="sm" />
+              <BodyPilotLogo size="sm" showTagline={false} />
             </div>
             <div className="hidden min-w-0 lg:block">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase text-slate-500 dark:text-slate-400">
-                <ActiveIcon className="h-4 w-4" />
-                {BODY_PILOT_BRAND.productLine}
-              </div>
-              <h2 className="mt-1 text-2xl font-semibold tracking-normal text-slate-950 dark:text-white">{activeMeta.label}</h2>
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-white"><ActiveIcon className="h-4 w-4" />{activeMeta.label}</h2>
             </div>
             <div className="flex items-center gap-2">
               {!loadProblem ? <Badge variant="outline" className="hidden bg-white/60 dark:bg-white/[0.04] sm:inline-flex">
                 {goals[state.goal].label}
               </Badge> : null}
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-2"
-                disabled={storageConflict || Boolean(loadProblem)}
-                onClick={() => setState((prev) => ({ ...prev, theme: prev.theme === "dark" ? "light" : "dark" }))}
-              >
-                <Settings2 className="h-4 w-4" />
-                {state.theme === "dark" ? "Light" : "Dark"}
-              </Button>
-              <Button variant="ghost" size="sm" className="gap-2" disabled={storageConflict || Boolean(loadProblem)} onClick={() => setShowResetPrompt(true)}>
+              {activeView === "more" ? <Button variant="ghost" size="sm" className="gap-2" disabled={editingBlocked} onClick={() => setShowResetPrompt(true)}>
                 <RotateCcw className="h-4 w-4" />
                 Reset
-              </Button>
+              </Button> : null}
             </div>
           </header>
 
@@ -7795,7 +7731,7 @@ export default function App() {
               className="mb-4 flex items-start justify-between gap-3 rounded-[18px] border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-950 dark:border-rose-400/30 dark:bg-rose-400/10 dark:text-rose-100"
             >
               <span>{persistenceError}</span>
-              {!storageConflict ? <button type="button" className="shrink-0" onClick={() => setPersistenceError(null)} aria-label="Dismiss save warning">
+              {!storageConflict && !persistenceBlocked ? <button type="button" className="shrink-0" onClick={() => setPersistenceError(null)} aria-label="Dismiss save warning">
                 <X className="h-4 w-4" />
               </button> : null}
             </div>
@@ -7813,6 +7749,8 @@ export default function App() {
             </div>
           ) : null}
 
+          {restorePending ? <p role="status" aria-live="polite" className="mb-3 rounded-xl border border-sky-400/25 bg-sky-400/10 p-3 text-sm text-sky-100">Saving the restored backup… Keep this tab open. Editing is paused until the save finishes.</p> : null}
+          <fieldset disabled={restorePending} aria-busy={restorePending} className="m-0 min-w-0 border-0 p-0">
           {storageConflict ? (
             <Card>
               <CardContent className="grid gap-3 p-5">
@@ -7832,7 +7770,17 @@ export default function App() {
               </CardContent></Card>
               {initialLoad.recoveryCopy ? <BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup}
                 recoveryCopy={initialLoad.recoveryCopy}
-                restoreBlockedReason={persistedRawRef.current === undefined ? "Device storage is unavailable. Reload once access is restored." : undefined} /> : null}
+                restoreBlockedReason={persistenceBlocked ?? (!persistence ? "Device storage is unavailable. Reload once access is restored." : undefined)} /> : null}
+            </div>
+          ) : persistenceBlocked ? (
+            <div className="grid gap-4">
+              <Card><CardContent className="grid gap-3 p-5">
+                <h2 className="text-lg font-semibold">Saving is paused</h2>
+                <p role="alert" className="text-sm text-amber-200">{persistenceBlocked}</p>
+                <p className="text-sm text-slate-300">This tab is read-only. A downloaded copy includes the data currently visible here, including any edits that have not saved.</p>
+                <Button variant="outline" className="min-h-11" onClick={downloadTabCopy}>Download this tab's copy</Button>
+                <Button className="min-h-11" onClick={() => window.location.reload()}>Reload saved data</Button>
+              </CardContent></Card>
             </div>
           ) : <>
           {activeView === "home" ? <HomeView state={state} model={model} setState={setState} goTo={goTo} /> : null}
@@ -7842,6 +7790,7 @@ export default function App() {
           {activeView === "more" ? <MoreView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "more" ? <div className="mt-5"><BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup} /></div> : null}
           </>}
+          </fieldset>
         </section>
       </div>
 
@@ -7852,8 +7801,9 @@ export default function App() {
               key={item.id}
               type="button"
               onClick={() => goTo(item.id)}
+              aria-current={activeView === item.id ? "page" : undefined}
               className={[
-                "flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-[20px] px-1.5 text-[11px] font-semibold transition",
+                "core-nav-item flex min-h-[52px] flex-col items-center justify-center gap-1 rounded-xl px-1.5 text-[11px] font-semibold transition",
                 activeView === item.id
                   ? "bg-slate-950 text-white dark:bg-white dark:text-slate-950"
                   : "text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-white/[0.06]",
@@ -7866,7 +7816,7 @@ export default function App() {
         </div>
       </nav>
 
-      {showResetPrompt && !storageConflict && !loadProblem ? (
+      {showResetPrompt && !editingBlocked ? (
         <div className="fixed inset-0 z-[90] grid items-end bg-slate-950/65 p-3 backdrop-blur-sm sm:place-items-center" role="presentation">
           <div
             role="dialog"
@@ -7896,7 +7846,7 @@ export default function App() {
               <Button
                 className="bg-rose-600 text-white hover:bg-rose-700"
                 onClick={() => {
-                  if (storageConflict || loadProblem) return;
+                  if (editingBlockedRef.current) return;
                   setState(defaultState);
                   setShowResetPrompt(false);
                   setNotificationNotice(null);

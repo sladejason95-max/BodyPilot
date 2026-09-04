@@ -8,6 +8,7 @@ export const BODY_PILOT_BRAND = {
 type BodyPilotLogoProps = {
   size?: "sm" | "md" | "lg";
   showWordmark?: boolean;
+  showTagline?: boolean;
   className?: string;
 };
 
@@ -30,7 +31,7 @@ const sizeClasses = {
 } as const;
 
 export function BodyPilotLogo(props: BodyPilotLogoProps) {
-  const { size = "md", showWordmark = true, className = "" } = props;
+  const { size = "md", showWordmark = true, showTagline = true, className = "" } = props;
   const classes = sizeClasses[size];
 
   return (
@@ -49,9 +50,9 @@ export function BodyPilotLogo(props: BodyPilotLogoProps) {
           <div className={`truncate font-bold tracking-normal text-slate-950 dark:text-slate-100 ${classes.name}`}>
             {BODY_PILOT_BRAND.name}
           </div>
-          <div className={`truncate font-semibold uppercase tracking-[0.06em] text-slate-500 dark:text-slate-400 ${classes.tagline}`}>
+          {showTagline ? <div className={`truncate font-semibold uppercase tracking-[0.06em] text-slate-500 dark:text-slate-400 ${classes.tagline}`}>
             {BODY_PILOT_BRAND.tagline}
-          </div>
+          </div> : null}
         </div>
       ) : null}
     </div>

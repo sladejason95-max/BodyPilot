@@ -33,17 +33,24 @@ export function BackupRestorePanel({
   recoveryCopy,
 }: {
   currentState: BackupState;
-  onRestore: (raw: BackupState) => { ok: boolean; message?: string };
+  onRestore: (
+    raw: BackupState,
+  ) =>
+    | { ok: boolean; message?: string }
+    | Promise<{ ok: boolean; message?: string }>;
   restoreBlockedReason?: string;
   recoveryCopy?: { content: string; label: string };
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const readRequest = useRef(0);
+  const mounted = useRef(true);
+  const restoringRef = useRef(false);
   const [preview, setPreview] = useState<{
     backup: ParsedLocalBackup;
     name: string;
   } | null>(null);
   const [reading, setReading] = useState(false);
+  const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [recoveryCopyRequested, setRecoveryCopyRequested] = useState(false);
@@ -54,14 +61,16 @@ export function BackupRestorePanel({
     setRecoveryCopyRequested(false);
     setConfirmed(false);
   }, [currentState, recoveryCopy?.content]);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       readRequest.current += 1;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const exportCurrent = (beforeRestore = false) => {
+    if (restoringRef.current) return;
     try {
       download(
         recoveryCopy?.content ?? serializeLocalBackup(currentState),
@@ -86,6 +95,7 @@ export function BackupRestorePanel({
   };
 
   const readFile = async (file: File) => {
+    if (restoringRef.current) return;
     const request = ++readRequest.current;
     setPreview(null);
     setConfirmed(false);
@@ -138,6 +148,7 @@ export function BackupRestorePanel({
           <Button
             variant="outline"
             className="min-h-11 gap-2"
+            disabled={restoring}
             onClick={() => exportCurrent()}
           >
             <Download className="h-4 w-4" aria-hidden="true" />{" "}
@@ -146,7 +157,7 @@ export function BackupRestorePanel({
           <Button
             variant="outline"
             className="min-h-11 gap-2"
-            disabled={reading || Boolean(restoreBlockedReason)}
+            disabled={reading || restoring || Boolean(restoreBlockedReason)}
             onClick={() => fileInput.current?.click()}
           >
             <Upload className="h-4 w-4" aria-hidden="true" />{" "}
@@ -159,7 +170,7 @@ export function BackupRestorePanel({
             className="sr-only"
             aria-label="Choose BodyPilot backup file"
             tabIndex={-1}
-            disabled={Boolean(restoreBlockedReason)}
+            disabled={restoring || Boolean(restoreBlockedReason)}
             onChange={(event) => {
               const file = event.currentTarget.files?.[0];
               event.currentTarget.value = "";
@@ -167,6 +178,11 @@ export function BackupRestorePanel({
             }}
           />
         </div>
+        {restoring ? (
+          <p role="status" aria-live="polite" className="text-sm text-sky-200">
+            Restoring and saving… Keep this tab open.
+          </p>
+        ) : null}
         {restoreBlockedReason ? (
           <p
             role="alert"
@@ -224,7 +240,7 @@ export function BackupRestorePanel({
             <Button
               variant="outline"
               className="min-h-11 !h-auto whitespace-normal py-2"
-              disabled={Boolean(restoreBlockedReason)}
+              disabled={restoring || Boolean(restoreBlockedReason)}
               onClick={() => exportCurrent(true)}
             >
               {recoveryCopy
@@ -237,7 +253,9 @@ export function BackupRestorePanel({
                 className="mt-1 h-5 w-5 shrink-0"
                 checked={confirmed}
                 disabled={
-                  !recoveryCopyRequested || Boolean(restoreBlockedReason)
+                  restoring ||
+                  !recoveryCopyRequested ||
+                  Boolean(restoreBlockedReason)
                 }
                 onChange={(event) => setConfirmed(event.currentTarget.checked)}
               />
@@ -251,6 +269,7 @@ export function BackupRestorePanel({
               <Button
                 variant="outline"
                 className="min-h-11"
+                disabled={restoring}
                 onClick={() => {
                   readRequest.current += 1;
                   setPreview(null);
@@ -264,19 +283,26 @@ export function BackupRestorePanel({
               <Button
                 className="min-h-11 !h-auto whitespace-normal bg-rose-700 py-2 text-white hover:bg-rose-800"
                 disabled={
+                  restoring ||
                   !confirmed ||
                   !recoveryCopyRequested ||
                   Boolean(restoreBlockedReason)
                 }
-                onClick={() => {
+                onClick={async () => {
                   if (
+                    restoringRef.current ||
                     !confirmed ||
                     !recoveryCopyRequested ||
                     restoreBlockedReason
                   )
                     return;
+                  restoringRef.current = true;
+                  setRestoring(true);
+                  setError("");
+                  setNotice("");
                   try {
-                    const result = onRestore(preview.backup.state);
+                    const result = await onRestore(preview.backup.state);
+                    if (!mounted.current) return;
                     if (!result.ok) {
                       setError(
                         result.message ||
@@ -293,15 +319,21 @@ export function BackupRestorePanel({
                         "Backup restored and saved on this device. Keep the pre-restore copy if you need to return to your previous data.",
                     );
                   } catch (cause) {
+                    if (!mounted.current) return;
                     setError(
                       cause instanceof Error
                         ? cause.message
                         : "Restore did not complete. Your current data has not changed.",
                     );
+                  } finally {
+                    restoringRef.current = false;
+                    if (mounted.current) setRestoring(false);
                   }
                 }}
               >
-                Replace data with this backup
+                {restoring
+                  ? "Saving restored backup…"
+                  : "Replace data with this backup"}
               </Button>
             </div>
           </section>

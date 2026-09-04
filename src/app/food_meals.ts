@@ -5,11 +5,22 @@ import type { FoodDiaryEntry, FoodDiaryFood } from "./food_diary";
 
 /** A reusable portion snapshot, never a reference to a dated diary entry. */
 export type FoodMealItem = Omit<FoodDiaryEntry, "id" | "date" | "recordedAt">;
+export type FoodRecipeYieldUnit = "servings" | "cooked-grams";
+export type FoodRecipeSnapshot = Readonly<{
+  version: 1;
+  /** Full-batch ingredient portions, separate from the saved default portion. */
+  ingredients: readonly FoodMealItem[];
+  yieldAmount: number;
+  yieldUnit: FoodRecipeYieldUnit;
+  portionAmount: number;
+}>;
 export type SavedFoodMeal = {
   id: string;
   name: string;
   items: FoodMealItem[];
   createdAt: string | null;
+  /** Absent for older combinations, which still log their exact saved portions. */
+  recipe?: FoodRecipeSnapshot;
 };
 
 const record = (value: unknown): Record<string, unknown> | null =>
@@ -18,6 +29,13 @@ const record = (value: unknown): Record<string, unknown> | null =>
     : null;
 const text = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
+
+/** Blank input is unknown, never a zero or a silently accepted default. */
+export const foodRecipeAmount = (value: unknown): number | null => {
+  const amount = typeof value === "number" ? value
+    : typeof value === "string" && /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.trim()) ? Number(value.trim()) : NaN;
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+};
 
 /** Invalid components reject the whole meal; a partial meal would under-report intake. */
 export const foodMealItems = (value: unknown): FoodMealItem[] | null => {
@@ -47,6 +65,7 @@ export const createSavedFoodMeal = (input: {
   name: string;
   items: readonly FoodDiaryFood[];
   createdAt: string | null;
+  recipe?: unknown;
 }): SavedFoodMeal | null => {
   const id = text(input.id);
   const name = text(input.name);
@@ -59,7 +78,11 @@ export const createSavedFoodMeal = (input: {
     recordedAt: input.createdAt,
   });
   if (!clock) return null;
-  return { id, name, items, createdAt: clock.recordedAt };
+  if (input.recipe === undefined) return { id, name, items, createdAt: clock.recordedAt };
+  const recipe = normalizeFoodRecipe(input.recipe);
+  const portionItems = recipe ? scaleFoodMealItems(recipe.ingredients, recipe.portionAmount / recipe.yieldAmount) : null;
+  if (!recipe || !portionItems) return null;
+  return { id, name, items: portionItems, createdAt: clock.recordedAt, recipe };
 };
 
 /** Old app states have no meals. Valid meals are retained, not silently truncated. */
@@ -75,6 +98,7 @@ export const normalizeSavedFoodMeals = (value: unknown): SavedFoodMeal[] => {
       name: typeof raw.name === "string" ? raw.name : "",
       items: raw.items,
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : null,
+      ...(raw.recipe !== undefined ? { recipe: raw.recipe } : {}),
     });
     if (!meal) return;
     const originalId = meal.id;
@@ -151,4 +175,46 @@ export const undoFoodDiaryBatch = (
 ): FoodDiaryEntry[] => {
   const ids = new Set(entryIds);
   return entries.filter((entry) => !ids.has(entry.id));
+};
+
+/** Each resize starts from the original serving bases, never rounded intermediate totals. */
+const scaleFoodMealItems = (items: readonly FoodMealItem[], multiplier: number): FoodMealItem[] | null => {
+  if (!Number.isFinite(multiplier) || multiplier <= 0) return null;
+  return foodMealItems(items.map(item => ({ ...item, servings: item.servings * multiplier })));
+};
+
+const normalizeFoodRecipe = (value: unknown): FoodRecipeSnapshot | null => {
+  const raw = record(value);
+  if (!raw || raw.version !== 1 || (raw.yieldUnit !== "servings" && raw.yieldUnit !== "cooked-grams")) return null;
+  const ingredients = foodMealItems(raw.ingredients);
+  const yieldAmount = foodRecipeAmount(raw.yieldAmount);
+  const portionAmount = foodRecipeAmount(raw.portionAmount);
+  if (!ingredients || yieldAmount === null || portionAmount === null) return null;
+  return Object.freeze({ version: 1 as const, yieldUnit: raw.yieldUnit, yieldAmount, portionAmount,
+    ingredients: Object.freeze(ingredients.map(item => Object.freeze(item))) });
+};
+
+/** Saving a recipe creates no dated entries. items remains compatible with existing meal logging. */
+export const createSavedFoodRecipe = (input: {
+  id: string;
+  name: string;
+  ingredients: readonly FoodDiaryFood[];
+  yieldAmount: number;
+  yieldUnit: FoodRecipeYieldUnit;
+  portionAmount: number;
+  createdAt: string | null;
+}): SavedFoodMeal | null => createSavedFoodMeal({
+  id: input.id, name: input.name, items: input.ingredients, createdAt: input.createdAt,
+  recipe: { version: 1, ingredients: input.ingredients, yieldAmount: input.yieldAmount,
+    yieldUnit: input.yieldUnit, portionAmount: input.portionAmount },
+});
+
+/** Recipe amount is servings or cooked grams; legacy amount is a multiplier of the saved combination. */
+export const foodMealPortion = (meal: SavedFoodMeal, amount: number): FoodMealItem[] | null => {
+  const portion = foodRecipeAmount(amount);
+  const saved = createSavedFoodMeal(meal);
+  if (portion === null || !saved) return null;
+  return saved.recipe
+    ? scaleFoodMealItems(saved.recipe.ingredients, portion / saved.recipe.yieldAmount)
+    : scaleFoodMealItems(saved.items, portion);
 };

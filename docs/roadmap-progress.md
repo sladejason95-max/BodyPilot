@@ -1,6 +1,17 @@
 # Core product roadmap progress
 
-Updated September 3, 2026. Scope: food, lifting, training splits, and the suggestion engine. Coaching is excluded. The original audit is a historical baseline, not the current release status.
+Updated September 3, 2026. Scope: food, lifting, training splits, and the suggestion engine. Coaching is excluded. The original audit and earlier sections below are historical; the latest batch is summarized first.
+
+## Latest batch — workbook tracker, dark workspace, and roadmap follow-through
+
+- Full configurable weight/macro workbook model: 365 dated rows, 53 review intervals, three trend methods, goal trajectory and projections, adherence, expenditure estimate, calorie adjustments, all macro allocation modes, calorie cycling, overrides, and source-referenced diagnostics. See `workbook-engine-map.md` for arithmetic coverage and documented source defects/safety differences.
+- Accepted targets, decision history and settings snapshots are separate from calculated proposals and from actual food/weight/lifting records. Later settings and review changes take effect tomorrow or later. Incomplete food days do not become trustworthy daily intake automatically; changing a marked-complete diary day invalidates its completion confirmation.
+- Compact dark-only core interface, mobile document scrolling, consolidated Home actions, accessible input sizing and retained keyboard focus. Legacy light-theme data remains readable in backups; it does not turn the interface light.
+- Save reliability now uses queued exclusive Web Locks around comparison and write; unsupported locks/read errors fail closed. Restore is asynchronous, blocks edits while pending, invalidates obsolete saves, and verifies the saved version before reporting success. This coordinates current cooperating tabs, not obsolete writers that ignore the lock protocol.
+- Meal/recipe creation no longer requires logging first. Full ingredient snapshots, servings/cooked-weight yield, editable default portions and per-log portion selection preserve old meals and prior logs.
+- Default profile inputs no longer create a precise readiness score or an undated recovery calorie penalty. Dated recovery/pain evidence takes priority, and weekly intake review also exposes recent completed workouts and holds for recovery flags, deload or disruption. These are explicit planning rules, not clinical predictions.
+
+Still not complete: account-backed cross-device synchronization (no connected provider/API), physical iOS/Android acceptance testing, and measured real-user preference/speed/repeat-use results. `mobile-field-validation.md` defines those checks without claiming they were run. Coaching, older iOS work and unrelated legal/server changes are excluded from this release.
 
 ## Delivered in this release sequence
 

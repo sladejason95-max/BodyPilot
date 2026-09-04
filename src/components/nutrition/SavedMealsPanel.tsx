@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { RotateCcw, Trash2 } from "lucide-react";
-import type { SavedFoodMeal } from "../../app/food_meals";
+import { foodMealPortion, foodRecipeAmount, type FoodMealItem, type SavedFoodMeal } from "../../app/food_meals";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
+import { Input } from "../ui/input";
 
 const amount = (value: number) =>
   new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
@@ -18,29 +19,41 @@ export function SavedMealsPanel({
   onLog,
   onDelete,
   onRestore,
+  onEdit,
 }: {
   meals: SavedFoodMeal[];
   selectedDate: string;
   today: string;
-  onLog: (meal: SavedFoodMeal) => void;
+  onLog: (meal: SavedFoodMeal, items?: FoodMealItem[]) => void;
   onDelete: (id: string) => void;
   onRestore: (meal: SavedFoodMeal) => void;
+  onEdit?: (meal: SavedFoodMeal) => void;
 }) {
   const [removed, setRemoved] = useState<SavedFoodMeal | null>(null);
   const [status, setStatus] = useState("");
+  const [portionAmounts, setPortionAmounts] = useState<Record<string, string>>({});
   return (
     <Card>
       <CardContent className="grid gap-3 p-4 sm:p-5">
         <div>
           <h2 className="font-semibold">Saved meals</h2>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Reuse a combination at its saved portions. In the diary, choose
-            Select / copy foods to create one.
+            Choose a portion, preview its nutrition, then log it. Build a recipe
+            without logging first, or save a combination from the diary.
           </p>
         </div>
         {meals.length ? (
           <ul className="divide-y divide-slate-200 dark:divide-white/10">
-            {meals.map((meal) => (
+            {meals.map((meal) => {
+              const selectedAmount = portionAmounts[meal.id] ?? String(meal.recipe?.portionAmount ?? 1);
+              const selectedValue = foodRecipeAmount(selectedAmount);
+              const selectedItems = selectedValue === null ? null : foodMealPortion(meal, selectedValue);
+              const unitLabel = meal.recipe?.yieldUnit === "cooked-grams" ? "cooked g" : meal.recipe ? "servings" : "saved portions";
+              const selectedTotals = selectedItems?.reduce((totals, item) => ({
+                calories: totals.calories + item.calories, protein: totals.protein + item.protein,
+                carbs: totals.carbs + item.carbs, fat: totals.fat + item.fat,
+              }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+              return (
               <li key={meal.id} className="min-w-0 py-3 first:pt-0 last:pb-0">
                 <div className="flex min-w-0 items-start gap-2">
                   <details className="min-w-0 flex-1">
@@ -48,17 +61,11 @@ export function SavedMealsPanel({
                       {meal.name}
                       <span className="mt-1 block text-xs font-normal text-slate-500 dark:text-slate-400">
                         {meal.items.length} foods ·{" "}
-                        {amount(
-                          meal.items.reduce(
-                            (sum, item) => sum + item.calories,
-                            0,
-                          ),
-                        )}{" "}
-                        kcal · View portions
+                        {selectedTotals ? `${amount(selectedTotals.calories)} kcal` : "Check portion"} · View ingredients
                       </span>
                     </summary>
                     <ul className="my-2 grid gap-2 text-xs text-slate-600 dark:text-slate-300">
-                      {meal.items.map((item, index) => (
+                      {(selectedItems ?? []).map((item, index) => (
                         <li key={index} className="break-words">
                           <span className="font-medium">{item.label}</span>
                           {item.brand ? ` · ${item.brand}` : ""}
@@ -88,17 +95,33 @@ export function SavedMealsPanel({
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                   </Button>
                 </div>
+                {meal.recipe ? <p className="mt-1 text-xs text-slate-400">
+                  Batch yield: {portion(meal.recipe.yieldAmount)} {unitLabel} · Default portion: {portion(meal.recipe.portionAmount)} {unitLabel}
+                </p> : null}
+                <div className="mt-2 flex flex-wrap items-end gap-2">
+                  <label className="grid min-w-0 flex-1 gap-1 text-xs text-slate-400">
+                    Portion · {unitLabel}
+                    <Input type="number" min="0" step="any" inputMode="decimal" value={selectedAmount}
+                      aria-label={`Portion for saved meal ${meal.name}`} aria-invalid={!selectedItems}
+                      onChange={event => setPortionAmounts(current => ({ ...current, [meal.id]: event.target.value }))} />
+                  </label>
+                  {onEdit ? <Button type="button" variant="ghost" className="min-h-11" onClick={() => onEdit(meal)} aria-label={`Edit saved meal ${meal.name}`}>Edit recipe</Button> : null}
+                </div>
+                {selectedTotals ? <p className="mt-2 text-xs tabular-nums text-slate-300">
+                  {amount(selectedTotals.protein)} g protein · {amount(selectedTotals.carbs)} g carbs · {amount(selectedTotals.fat)} g fat
+                </p> : <p role="alert" className="mt-2 text-xs text-rose-300">Enter a valid portion greater than zero before logging.</p>}
                 <Button
                   variant="outline"
                   className="mt-2 min-h-11 !h-auto w-full whitespace-normal py-2"
                   aria-label={`Log saved meal ${meal.name} for ${selectedDate === today ? "today" : selectedDate}`}
-                  onClick={() => onLog(meal)}
+                  disabled={!selectedItems}
+                  onClick={() => { if (selectedItems) onLog(meal, selectedItems); }}
                 >
-                  Log {meal.items.length} foods for{" "}
+                  Log {selectedValue === null ? "portion" : `${portion(selectedValue)} ${unitLabel}`} for{" "}
                   {selectedDate === today ? "today" : selectedDate}
                 </Button>
               </li>
-            ))}
+            );})}
           </ul>
         ) : (
           <p className="text-sm text-slate-600 dark:text-slate-300">

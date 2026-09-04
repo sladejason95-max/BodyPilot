@@ -5,6 +5,7 @@ import { Card, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
 import { FoodDiaryPanel } from "./FoodDiaryPanel";
 import { SavedMealsPanel } from "./SavedMealsPanel";
+import { MealRecipeBuilder } from "../../app/components/MealRecipeBuilder";
 import {
   createSavedFoodMeal,
   instantiateFoodMeal,
@@ -34,6 +35,10 @@ type Props = {
   entries: FoodDiaryEntry[];
   today: string;
   targets: Macros;
+  targetsForDate?: (date: string) => Macros | null;
+  targetDescription?: string;
+  isDayComplete?: (date: string) => boolean;
+  onDayComplete?: (date: string, complete: boolean) => void;
   legacyTotals?: Macros;
   savedMeals: SavedFoodMeal[];
   onSavedMealsChange: (
@@ -70,7 +75,11 @@ const titleFor = (food: FoodCatalogItem) =>
 export function NutritionDiaryView({
   entries,
   today,
-  targets,
+  targets: fallbackTargets,
+  targetsForDate,
+  targetDescription,
+  isDayComplete,
+  onDayComplete,
   legacyTotals,
   savedMeals,
   onSavedMealsChange,
@@ -79,8 +88,11 @@ export function NutritionDiaryView({
   const [date, setDate] = useState(today);
   const previousToday = useRef(today);
   const [notice, setNotice] = useState("");
+  const [recipeEditor, setRecipeEditor] = useState<SavedFoodMeal | "new" | null>(null);
   const [lastAddedIds, setLastAddedIds] = useState<string[]>([]);
   const totals = foodDiaryTotals(entries, date);
+  const datedTargets = targetsForDate?.(date);
+  const targets = datedTargets ?? fallbackTargets;
   useEffect(() => {
     const priorDate = previousToday.current;
     previousToday.current = today;
@@ -222,12 +234,15 @@ export function NutritionDiaryView({
               About these targets
             </summary>
             <p className="mt-2 leading-5">
-              Starting estimates from your profile, goal, steps and recovery
-              inputs—not expenditure measured from your food and weight history.
-              Past dates are compared with your current targets. Incomplete
-              logging makes the remaining amounts incomplete too.
+              {datedTargets ? targetDescription ?? "Targets saved for this date. Later adjustments do not change this day's target." : "Profile-based starting estimates, not measured expenditure. No accepted tracker target exists for this date; current estimates are shown for reference."}
+              {" "}Incomplete logging makes remaining amounts incomplete too.
             </p>
           </details>
+          {onDayComplete ? <label className="mt-2 flex min-h-11 items-center gap-3 text-sm">
+            <input type="checkbox" checked={isDayComplete?.(date) ?? false} disabled={date > today}
+              onChange={event => onDayComplete(date, event.target.checked)} />
+            Food logging complete for {date === today ? "today" : date}
+          </label> : null}
         </CardContent>
       </Card>
       <div className="grid items-start gap-4 xl:grid-cols-2">
@@ -284,11 +299,27 @@ export function NutritionDiaryView({
               ) : null}
             </div>
           ) : null}
+          <Button variant="outline" onClick={() => setRecipeEditor("new")}>Build a meal or recipe</Button>
+          {recipeEditor ? <MealRecipeBuilder
+            foodOptions={recentFoodDiaryEntries(entries, 20)} existingMeals={savedMeals}
+            initialMeal={recipeEditor === "new" ? undefined : recipeEditor}
+            onSearch={async query => (await searchFoodDatabase(query, { limit: 12 })).foods.map(food => ({
+              ...food, ...food.nutrients, foodId: food.id, baseNutrients: food.nutrients, servings: 1,
+            }))}
+            onSave={meal => {
+              onSavedMealsChange(current => [meal, ...current.filter(item => item.id !== meal.id)]);
+              setRecipeEditor(null);
+              setNotice(`Saved ${meal.name}. Nothing was added to your diary.`);
+            }} onCancel={() => setRecipeEditor(null)} /> : null}
+          {savedMeals.some(meal => meal.recipe) ? <details className="text-sm"><summary className="min-h-11 cursor-pointer py-3">Edit a saved recipe</summary>
+            <div className="flex flex-wrap gap-2">{savedMeals.filter(meal => meal.recipe).map(meal => <Button key={meal.id} variant="outline" onClick={() => setRecipeEditor(meal)}>{meal.name}</Button>)}</div>
+          </details> : null}
           <SavedMealsPanel
             meals={savedMeals}
             selectedDate={date}
             today={today}
-            onLog={(meal) => addBatch(meal.items, undefined, meal.name)}
+            onLog={(meal, items) => addBatch(items ?? meal.items, undefined, meal.name)}
+            onEdit={meal => setRecipeEditor(meal)}
             onDelete={(id) =>
               onSavedMealsChange((current) =>
                 current.filter((meal) => meal.id !== id),
