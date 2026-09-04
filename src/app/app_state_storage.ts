@@ -6,6 +6,7 @@ export type AppStateLoad<T> = {
   baselineRaw: string | null | undefined;
   problem: string | null;
   recoveryCopy?: { content: string; label: string };
+  originalRecords?: Record<string, string | null>;
 };
 
 const parseStoredRecord = (raw: string): StoredRecord => {
@@ -40,13 +41,16 @@ export const loadAppStateSafely = <T>({
 }): AppStateLoad<T> => {
   let baselineRaw: string | null | undefined;
   const recoveryRecords: Record<string, string> = {};
+  const originalRecords: Record<string, string | null> = {};
   try {
     baselineRaw = storage.getItem(key);
+    originalRecords[key] = baselineRaw;
     if (baselineRaw !== null) recoveryRecords[key] = baselineRaw;
     const readLegacyPayloads = () => {
       const payloads: StoredRecord[] = [];
       for (const legacyKey of legacyKeys) {
         const raw = storage.getItem(legacyKey);
+        originalRecords[legacyKey] = raw;
         if (raw !== null) {
           recoveryRecords[legacyKey] = raw;
           payloads.push(parseStoredRecord(raw));
@@ -71,6 +75,7 @@ export const loadAppStateSafely = <T>({
       state: defaultState,
       baselineRaw,
       problem: cause instanceof Error ? cause.message : "Saved data could not be read.",
+      originalRecords: baselineRaw === undefined ? undefined : originalRecords,
       recoveryCopy: Object.keys(recoveryRecords).length ? {
         content: typeof baselineRaw === "string" ? baselineRaw : JSON.stringify({ format: "bodypilot-storage-recovery", records: recoveryRecords }, null, 2),
         label: typeof baselineRaw === "string" ? "Original saved data" : "Original legacy saved data",

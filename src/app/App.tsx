@@ -131,6 +131,7 @@ import { WeightMacroTrackerPanel } from "./components/WeightMacroTrackerPanel";
 import { createQueuedStatePersistence, type StateLockManager, type TransactionalStateWriteResult } from "./transactional_state_persistence";
 import { backupNormalizationChanges, validateBackupState, type BackupState } from "./local_backup";
 import { loadAppStateSafely } from "./app_state_storage";
+import { recoverFreshAppState } from "./startup_recovery";
 import { BackupRestorePanel } from "@/components/shared/BackupRestorePanel";
 import { normalizeCompletedMesocycleIds, normalizeWorkoutDateOverrides, type WorkoutDateOverrides } from "./workout_schedule";
 import {
@@ -1644,6 +1645,7 @@ const normalizeWorkoutHistory = (history: unknown, fallbackMesocycleId: string):
               const rawSet = setItem as Partial<WorkoutHistorySet>;
               if (!rawSet || typeof rawSet !== "object") return null;
               return {
+                ...rawSet,
                 weight: Number(rawSet.weight || 0),
                 reps: Number(rawSet.reps || 0),
                 rir: clamp(Number(rawSet.rir ?? 2), 0, 5),
@@ -1654,6 +1656,7 @@ const normalizeWorkoutHistory = (history: unknown, fallbackMesocycleId: string):
         : [];
       const topSet = raw.topSet
         ? {
+            ...raw.topSet,
             weight: Number(raw.topSet.weight || 0),
             reps: Number(raw.topSet.reps || 0),
             rir: clamp(Number(raw.topSet.rir ?? 2), 0, 5),
@@ -1665,6 +1668,9 @@ const normalizeWorkoutHistory = (history: unknown, fallbackMesocycleId: string):
       const dayId = raw.dayId || "unknown";
 
       return {
+        // History may contain migration provenance or metadata from an earlier
+        // release. Keep it while normalizing the fields this version consumes.
+        ...raw,
         id: raw.id || `workout-history-${index}`,
         completedAt: raw.completedAt || new Date().toISOString(),
         mesocycleId,
@@ -2351,7 +2357,11 @@ export const normalizeSavedAppState = (parsed: BackupState, payloads: BackupStat
   }
   const normalized = normalizeAppState(parsed, payloads);
   if (parsed.schemaVersion === 4 && parsed.foodDiaryVersion === 1) {
-    validateBackupState(parsed);
+    // Earlier schema-4 releases had a food diary before saved meals existed.
+    // An absent collection is an additive migration, not a damaged record.
+    const validationState = Object.prototype.hasOwnProperty.call(parsed, "savedFoodMeals")
+      ? parsed : { ...parsed, savedFoodMeals: [] };
+    validateBackupState(validationState);
     const changed = backupNormalizationChanges(parsed, normalized as unknown as BackupState);
     if (changed.length) {
       throw new Error(`Saved ${changed.slice(0, 3).join(", ")} records need recovery. The original data has been kept unchanged.`);
@@ -7413,6 +7423,8 @@ export default function App() {
     ? "Safe saving is unavailable in this browser. Editing and restore are paused; export a copy and reopen in a browser that supports Web Locks."
     : null);
   const [restorePending, setRestorePending] = useState(false);
+  const [confirmFreshStart, setConfirmFreshStart] = useState(false);
+  const [freshStartError, setFreshStartError] = useState<string | null>(null);
   const editingBlocked = storageConflict || Boolean(loadProblem) || Boolean(persistenceBlocked) || restorePending;
   const editingBlockedRef = React.useRef(editingBlocked);
   editingBlockedRef.current = editingBlocked;
@@ -7537,6 +7549,38 @@ export default function App() {
     link.download = `bodypilot-tab-copy-${foodDiaryDateKey(new Date())}.json`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const startFreshFromRecovery = async () => {
+    if (!loadProblem || !initialLoad.originalRecords || initialLoad.baselineRaw === undefined ||
+        !stateLocks || storageConflict || persistenceBlocked || restorePendingRef.current) return;
+    restorePendingRef.current = true;
+    setRestorePending(true);
+    setFreshStartError(null);
+    try {
+      persistence?.cancelPending();
+      const result = await recoverFreshAppState({
+        storage: { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value) },
+        key: STORAGE_KEY,
+        expectedRaw: initialLoad.baselineRaw,
+        originalRecords: initialLoad.originalRecords,
+        nextRaw: JSON.stringify(defaultState),
+        archiveId: crypto.randomUUID(),
+        archivedAt: new Date().toISOString(),
+        locks: stateLocks,
+      });
+      if (result.status === "saved") {
+        persistence?.halt();
+        window.location.reload();
+      } else {
+        setFreshStartError(result.message);
+      }
+    } catch {
+      setFreshStartError("The new workspace could not be opened. Your original record has not been removed. Try again or reload this page.");
+    } finally {
+      restorePendingRef.current = false;
+      if (mountedRef.current) setRestorePending(false);
+    }
   };
 
   const restoreBackup = async (raw: BackupState): Promise<{ ok: boolean; message?: string }> => {
@@ -7749,7 +7793,7 @@ export default function App() {
             </div>
           ) : null}
 
-          {restorePending ? <p role="status" aria-live="polite" className="mb-3 rounded-xl border border-sky-400/25 bg-sky-400/10 p-3 text-sm text-sky-100">Saving the restored backup… Keep this tab open. Editing is paused until the save finishes.</p> : null}
+          {restorePending ? <p role="status" aria-live="polite" className="mb-3 rounded-xl border border-sky-400/25 bg-sky-400/10 p-3 text-sm text-sky-100">Saving your workspace… Keep this tab open until the save finishes.</p> : null}
           <fieldset disabled={restorePending} aria-busy={restorePending} className="m-0 min-w-0 border-0 p-0">
           {storageConflict ? (
             <Card>
@@ -7765,8 +7809,16 @@ export default function App() {
               <Card><CardContent className="grid gap-3 p-5">
                 <h2 className="text-lg font-semibold">Your saved data needs attention</h2>
                 <p role="alert" className="text-sm text-rose-700 dark:text-rose-200">{loadProblem}</p>
-                <p className="text-sm text-slate-600 dark:text-slate-300">Nothing has been overwritten. Editing and automatic saving are paused. Keep a copy of the original saved data before restoring a trusted backup.</p>
+                <p className="text-sm text-slate-600 dark:text-slate-300">An older record on this device could not be opened. You can retry loading it, restore a backup, or start fresh. Starting fresh keeps the original record separately on this device first; no backup file is required.</p>
                 <Button variant="outline" className="min-h-11" onClick={() => window.location.reload()}>Try loading saved data again</Button>
+                {initialLoad.originalRecords && initialLoad.recoveryCopy && stateLocks && !persistenceBlocked ? (
+                  confirmFreshStart ? <div className="grid gap-3 rounded-xl border border-white/10 p-3">
+                    <p className="text-sm text-slate-300">Open a blank workspace? The original record will remain available under More → Backup &amp; restore → Previous local records.</p>
+                    <Button className="min-h-11" onClick={startFreshFromRecovery}>Keep original and start fresh</Button>
+                    <Button variant="outline" className="min-h-11" onClick={() => setConfirmFreshStart(false)}>Keep current saved data</Button>
+                  </div> : <Button className="min-h-11" onClick={() => setConfirmFreshStart(true)}>Start fresh on this device</Button>
+                ) : null}
+                {freshStartError ? <p role="alert" className="text-sm text-rose-200">{freshStartError}</p> : null}
               </CardContent></Card>
               {initialLoad.recoveryCopy ? <BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup}
                 recoveryCopy={initialLoad.recoveryCopy}
@@ -7788,7 +7840,7 @@ export default function App() {
           {activeView === "food" ? <FoodView state={state} model={model} setState={setState} /> : null}
           {activeView === "training" ? <TrainingView state={state} model={model} setState={setState} goTo={goTo} /> : null}
           {activeView === "more" ? <MoreView state={state} model={model} setState={setState} goTo={goTo} /> : null}
-          {activeView === "more" ? <div className="mt-5"><BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup} /></div> : null}
+          {activeView === "more" ? <div className="mt-5"><BackupRestorePanel currentState={state as unknown as BackupState} onRestore={restoreBackup} archiveStorageKey={STORAGE_KEY} /></div> : null}
           </>}
           </fieldset>
         </section>

@@ -101,6 +101,27 @@ test("real App keeps corrupt original recovery export and blocks unsafe restore"
   assert.deepEqual(writes, []);
 });
 
+test("a damaged record offers fresh start without requiring a backup file", () => {
+  const { html, writes } = renderApp({
+    raw: "{broken saved record",
+    locks: { request() { throw new Error("Rendering must not replace stored data"); } },
+  });
+  assert.match(html, /Start fresh on this device/);
+  assert.match(html, /no backup file is required/);
+  assert.match(html, /Export original recovery copy/);
+  assert.deepEqual(writes, []);
+});
+
+test("a first visit with empty storage opens the workspace without recovery", () => {
+  const { html, writes } = renderApp({
+    raw: null,
+    locks: { request() { throw new Error("Rendering must not write storage"); } },
+  });
+  assert.match(html, /Weight|Schedule/);
+  assert.doesNotMatch(html, /Your saved data needs attention|Saving is paused|Start fresh on this device/);
+  assert.deepEqual(writes, []);
+});
+
 test("real App does not offer a default-state backup when storage cannot be read", () => {
   const { html, writes } = renderApp({ readError: true });
   assert.match(html, /Your saved data needs attention/);

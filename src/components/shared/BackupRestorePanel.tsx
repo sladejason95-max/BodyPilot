@@ -9,6 +9,7 @@ import {
 } from "../../app/local_backup";
 import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
+import { listRecoveryArchives } from "../../app/startup_recovery";
 
 const download = (content: string, prefix: string) => {
   const url = URL.createObjectURL(
@@ -31,6 +32,7 @@ export function BackupRestorePanel({
   onRestore,
   restoreBlockedReason,
   recoveryCopy,
+  archiveStorageKey,
 }: {
   currentState: BackupState;
   onRestore: (
@@ -40,6 +42,7 @@ export function BackupRestorePanel({
     | Promise<{ ok: boolean; message?: string }>;
   restoreBlockedReason?: string;
   recoveryCopy?: { content: string; label: string };
+  archiveStorageKey?: string;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const readRequest = useRef(0);
@@ -55,6 +58,19 @@ export function BackupRestorePanel({
   const [notice, setNotice] = useState("");
   const [recoveryCopyRequested, setRecoveryCopyRequested] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [previousRecords, setPreviousRecords] = useState<Array<{ key: string; archivedAt: string; content: string }>>([]);
+  const [archiveError, setArchiveError] = useState("");
+
+  useEffect(() => {
+    if (!archiveStorageKey) return;
+    try {
+      const result = listRecoveryArchives({ storage: window.localStorage, key: archiveStorageKey });
+      setPreviousRecords(result.archives);
+      setArchiveError(result.status === "error" ? result.message : "");
+    } catch {
+      setArchiveError("Previous local records could not be read in this browser.");
+    }
+  }, [archiveStorageKey]);
 
   // A previously downloaded copy no longer protects edits made after that copy.
   useEffect(() => {
@@ -144,6 +160,19 @@ export function BackupRestorePanel({
             </p>
           ) : null}
         </div>
+        {previousRecords.length > 0 ? <details className="rounded-xl border border-white/10 p-3">
+          <summary className="cursor-pointer text-sm font-medium">Previous local records ({previousRecords.length})</summary>
+          <p className="my-3 text-xs text-slate-400">Original records kept when you started fresh. Download a copy for recovery or repair; these files do not change your current workspace.</p>
+          <div className="grid gap-2">
+            {previousRecords.map(record => <Button key={record.key} variant="outline" className="min-h-11" onClick={() => {
+              try {
+                download(record.content, "bodypilot-previous-local-record");
+                setNotice("Download requested. Check your downloads for the original local record.");
+              } catch { setError("The original local record could not be downloaded. It remains stored on this device."); }
+            }}>Download original · {new Date(record.archivedAt).toLocaleString()}</Button>)}
+          </div>
+        </details> : null}
+        {archiveError ? <p role="status" className="text-xs text-amber-200">{archiveError}</p> : null}
         <div className="grid gap-2 sm:grid-cols-2">
           <Button
             variant="outline"

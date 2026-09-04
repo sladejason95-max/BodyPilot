@@ -35,6 +35,7 @@ test("normalization failure preserves original data for recovery", () => {
   const result = load({ current: raw }, () => { throw new Error("Invalid records"); });
   assert.equal(result.problem, "Invalid records");
   assert.equal(result.baselineRaw, raw);
+  assert.deepEqual(result.originalRecords, { current: raw });
 });
 test("first launch is empty but a valid legacy copy still migrates", () => {
   assert.deepEqual(load({}), { state: defaults, baselineRaw: null, problem: null });
@@ -45,6 +46,7 @@ test("damaged legacy data also blocks autosave rather than silently starting ove
   assert.ok(result.problem);
   assert.equal(result.baselineRaw, null);
   assert.equal(JSON.parse(result.recoveryCopy.content).records.legacy, "broken");
+  assert.deepEqual(result.originalRecords, { current: null, legacy: "broken" });
 });
 
 test("invalid schema types never enter legacy migration", () => {

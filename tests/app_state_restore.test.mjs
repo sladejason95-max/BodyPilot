@@ -5,6 +5,7 @@ import {
   backupNormalizationChanges,
   parseLocalBackup,
   serializeLocalBackup,
+  validateBackupState,
 } from "../src/app/local_backup.ts";
 import {
   createFoodDiaryEntry,
@@ -18,6 +19,7 @@ import {
   finishWorkoutSession,
 } from "../src/app/workout_session.ts";
 import { normalizeBodyweightHistory } from "../src/app/bodyweight_history.ts";
+import { loadAppStateSafely } from "../src/app/app_state_storage.ts";
 
 let server;
 let defaultState;
@@ -267,6 +269,99 @@ test("strict saved-state startup accepts legitimate current records without chan
   }
 });
 
+test("released schema-4 food diaries from before saved meals open without changing existing records", () => {
+  // Release 801c3932 already used schema 4 / diary 1, but savedFoodMeals
+  // was introduced later in bf01267d without a schema-version change.
+  const source = clone(currentStateFixture());
+  delete source.savedFoodMeals;
+  delete source.trackerProgram;
+  delete source.completedMesoIds;
+  delete source.workoutDateOverrides;
+  const raw = JSON.stringify(source);
+  const loaded = loadAppStateSafely({
+    storage: { getItem: () => raw }, key: "bodypilot-ai-v4",
+    defaultState, normalize: normalizeSavedAppState,
+  });
+  assert.equal(loaded.problem, null);
+  assert.deepEqual(loaded.state.savedFoodMeals, []);
+  assert.deepEqual(backupNormalizationChanges(source, loaded.state), []);
+  assert.deepEqual(loaded.state.foodLog, source.foodLog);
+  assert.deepEqual(loaded.state.workoutHistory, source.workoutHistory);
+  assert.equal(JSON.stringify(source), raw, "Startup must not mutate the original record");
+  assert.throws(() => validateBackupState(source), /savedFoodMeals/,
+    "Backup imports still require their declared collections");
+  assert.doesNotThrow(() => normalizeSavedAppState(JSON.parse(JSON.stringify(loaded.state))));
+});
+
+test("the saved-meals startup migration accepts absence only, not a malformed supplied collection", () => {
+  for (const savedFoodMeals of [undefined, null, {}, ""]) {
+    const source = { ...clone(defaultState), savedFoodMeals };
+    assert.throws(() => normalizeSavedAppState(source), /savedFoodMeals/);
+  }
+});
+
+test("migrated workout provenance survives saving and repeated real startup loads", () => {
+  const migrated = normalizeSavedAppState({
+    ...clone(defaultState),
+    schemaVersion: 3,
+    mesocycleId: "meso-import",
+    mesoStartedAt: "2026-08-01T00:00:00.000Z",
+    trackerDays: [{
+      id: "tracked-one",
+      date: "2026-08-05",
+      title: "Push",
+      closedAt: "2026-08-05T18:00:00.000Z",
+      lifts: [{
+        id: "bench-row", name: "Barbell Bench Press", completed: true,
+        actualSets: "3", actualReps: "10, 9, 8", weight: "225", rpe: "8, 9, 9",
+      }],
+    }],
+  });
+  assert.equal(migrated.workoutHistory[0].source, "legacy-tracker");
+  let raw = JSON.stringify(migrated);
+  for (let reload = 0; reload < 3; reload++) {
+    const source = JSON.parse(raw);
+    const loaded = loadAppStateSafely({
+      storage: { getItem: () => raw }, key: "bodypilot-ai-v4",
+      defaultState, normalize: normalizeSavedAppState,
+    });
+    assert.equal(loaded.problem, null, "The app's own migrated records must open normally");
+    assert.deepEqual(backupNormalizationChanges(source, loaded.state), []);
+    assert.equal(loaded.state.workoutHistory[0].source, "legacy-tracker");
+    assert.equal(loaded.state.workoutHistory[0].totalVolume, 6075);
+    assert.equal(loaded.state.workoutHistory.length, 1);
+    raw = JSON.stringify(loaded.state);
+  }
+});
+
+test("workout history preserves JSON metadata on entries, individual sets and top sets", () => {
+  const state = clone(currentStateFixture());
+  state.workoutHistory[0].source = "legacy-tracker";
+  state.workoutHistory[0].importContext = { version: 1, notes: ["Imported workout"] };
+  state.workoutHistory[0].sets[0].effortSource = { method: "manual", confidence: null };
+  state.workoutHistory[0].topSet.equipmentNote = "Machine stack";
+  const normalized = normalizeSavedAppState(state);
+  assert.deepEqual(normalized.workoutHistory, state.workoutHistory);
+  restoreRoundTrip(state);
+});
+
+test("preserving workout metadata does not permit malformed performance values", () => {
+  for (const mutate of [
+    (h) => { h.sets[0].weight = "invalid"; },
+    (h) => { h.sets[0].reps = null; },
+    (h) => { h.sets[0].rir = 99; },
+    (h) => { h.topSet.weight = "60"; },
+    (h) => { h.topSet.reps = { count: 8 }; },
+  ]) {
+    const state = clone(currentStateFixture());
+    state.workoutHistory[0].source = "legacy-tracker";
+    mutate(state.workoutHistory[0]);
+    const original = JSON.stringify(state);
+    assert.throws(() => normalizeSavedAppState(state), /workoutHistory|invalid number/);
+    assert.equal(JSON.stringify(state), original);
+  }
+});
+
 test("strict saved-state startup rejects damaged records rather than silently loading a partial replacement", () => {
   for (const mutate of [
     (state) => {
@@ -409,13 +504,14 @@ test("explicit unchecked schedule and skipped-workout flags survive restore", ()
   restoreRoundTrip(state);
 });
 
-test("unsupported metadata and invalid records cause a preservation failure, not silent success", () => {
+test("preserved workout metadata does not mask invalid food records", () => {
   const state = clone(currentStateFixture());
   state.workoutHistory[0].futureMetric = 123;
   state.foodLog[0].date = "2026-02-30";
   const parsed = parseLocalBackup(serializeLocalBackup(state, T2));
   assert.deepEqual(
     backupNormalizationChanges(parsed.state, normalizeAppState(parsed.state)),
-    ["foodLog", "workoutHistory"],
+    ["foodLog"],
   );
+  assert.equal(normalizeAppState(parsed.state).workoutHistory[0].futureMetric, 123);
 });

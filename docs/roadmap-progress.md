@@ -2,6 +2,12 @@
 
 Updated September 3, 2026. Scope: food, lifting, training splits, and the suggestion engine. Coaching is excluded. The original audit and earlier sections below are historical; the latest batch is summarized first.
 
+## Startup correction
+
+- Fixed a reload regression where imported workout history's `source: "legacy-tracker"` metadata was stripped, causing the preservation check to block all tabs. Entry, set and top-set metadata now survive normalization; invalid actuals still trigger recovery.
+- Older schema-4 saves made before saved meals existed can open through an additive empty-collection migration.
+- Unrecognized records offer a fresh-start option without requiring a backup file. Exact originals are archived and verified locally before replacement and can be downloaded from More → Backup & restore → Previous local records.
+
 ## Latest batch — workbook tracker, dark workspace, and roadmap follow-through
 
 - Full configurable weight/macro workbook model: 365 dated rows, 53 review intervals, three trend methods, goal trajectory and projections, adherence, expenditure estimate, calorie adjustments, all macro allocation modes, calorie cycling, overrides, and source-referenced diagnostics. See `workbook-engine-map.md` for arithmetic coverage and documented source defects/safety differences.
