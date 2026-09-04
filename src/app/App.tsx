@@ -110,6 +110,7 @@ import { equipmentAllowsExercise } from "./builder_equipment";
 import { exercisePreferenceKey, hasExercisePainFlag, normalizeExerciseLoadIncrements } from "./exercise_training_preferences";
 import { NutritionDiaryView } from "@/components/nutrition/NutritionDiaryView";
 import { foodDiaryDateKey, foodDiaryTotals, normalizeFoodDiary, type FoodDiaryEntry } from "./food_diary";
+import { normalizeSavedFoodMeals, type SavedFoodMeal } from "./food_meals";
 import {
   bodyweightLocalDateKey,
   mergeBodyweightHistory,
@@ -274,6 +275,7 @@ type AppState = {
   soreness: number;
   foodLog: FoodDiaryEntry[];
   foodDiaryVersion: 1;
+  savedFoodMeals: SavedFoodMeal[];
   legacyNutritionTotals?: { calories: number; protein: number; carbs: number; fat: number };
   workoutLog: Record<string, WorkoutSetLog[]>;
   workoutSessions: Record<string, WorkoutSession>;
@@ -519,6 +521,7 @@ const defaultState: AppState = {
   soreness: 4,
   foodLog: [],
   foodDiaryVersion: 1,
+  savedFoodMeals: [],
   workoutLog: {},
   workoutSessions: {},
   workoutHistory: [],
@@ -2217,6 +2220,7 @@ const loadState = (): AppState => {
       soreness: Math.round(readClampedNumber(parsed.soreness, defaultState.soreness, 1, 10)),
       foodLog: normalizeFoodLog(parsed.foodLog),
       foodDiaryVersion: 1,
+      savedFoodMeals: normalizeSavedFoodMeals(parsed.savedFoodMeals),
       legacyNutritionTotals: legacyTotals && Object.values(legacyTotals).some(value => value > 0) ? legacyTotals : undefined,
       workoutLog: normalizeWorkoutLog(parsed.workoutLog),
       workoutSessions: normalizeWorkoutSessions(parsed.workoutSessions),
@@ -5644,6 +5648,8 @@ function FoodView({ state, model, setState }: {
 }) {
   return <NutritionDiaryView
     entries={state.foodLog}
+    savedMeals={state.savedFoodMeals}
+    onSavedMealsChange={update => setState(prev => ({ ...prev, savedFoodMeals: update(prev.savedFoodMeals) }))}
     today={foodDiaryDateKey(new Date())}
     targets={{ calories: model.macros.calories, protein: model.macros.protein, carbs: model.macros.carbs, fat: model.macros.fats }}
     legacyTotals={state.legacyNutritionTotals}

@@ -4,6 +4,14 @@ import { Button } from "../ui/button";
 import { Card, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
 import { FoodDiaryPanel } from "./FoodDiaryPanel";
+import { SavedMealsPanel } from "./SavedMealsPanel";
+import {
+  createSavedFoodMeal,
+  instantiateFoodMeal,
+  restoreSavedFoodMeal,
+  undoFoodDiaryBatch,
+  type SavedFoodMeal,
+} from "../../app/food_meals";
 import {
   lookupFoodBarcode,
   searchFoodDatabase,
@@ -17,6 +25,7 @@ import {
   recentFoodDiaryEntries,
   resizeFoodDiaryEntry,
   type FoodDiaryEntry,
+  type FoodDiaryFood,
 } from "../../app/food_diary";
 import type { FoodCatalogItem, FoodNutrients } from "../../app/types";
 
@@ -26,6 +35,10 @@ type Props = {
   today: string;
   targets: Macros;
   legacyTotals?: Macros;
+  savedMeals: SavedFoodMeal[];
+  onSavedMealsChange: (
+    update: (meals: SavedFoodMeal[]) => SavedFoodMeal[],
+  ) => void;
   onEntriesChange: (
     update: (entries: FoodDiaryEntry[]) => FoodDiaryEntry[],
   ) => void;
@@ -48,7 +61,9 @@ type Detector = {
 type DetectorConstructor = new (options: { formats: string[] }) => Detector;
 const amount = (value: number) => Math.round(value * 10) / 10;
 const portionAmount = (value: number) =>
-  new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 }).format(value);
+  new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 }).format(
+    value,
+  );
 const titleFor = (food: FoodCatalogItem) =>
   food.brand ? `${food.label} · ${food.brand}` : food.label;
 
@@ -57,12 +72,14 @@ export function NutritionDiaryView({
   today,
   targets,
   legacyTotals,
+  savedMeals,
+  onSavedMealsChange,
   onEntriesChange,
 }: Props) {
   const [date, setDate] = useState(today);
   const previousToday = useRef(today);
   const [notice, setNotice] = useState("");
-  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
+  const [lastAddedIds, setLastAddedIds] = useState<string[]>([]);
   const totals = foodDiaryTotals(entries, date);
   useEffect(() => {
     const priorDate = previousToday.current;
@@ -71,13 +88,14 @@ export function NutritionDiaryView({
   }, [today]);
 
   const add = (draft: FoodDraft | FoodDiaryEntry) => {
-    const currentDate = foodDiaryDateKey(new Date());
+    const now = new Date();
+    const currentDate = foodDiaryDateKey(now);
     const entryDate = date === today ? currentDate : date;
     if (entryDate !== date) setDate(entryDate);
     const entry = createFoodDiaryEntry(draft, {
       id: `food-${crypto.randomUUID()}`,
       date: entryDate,
-      recordedAt: new Date().toISOString(),
+      recordedAt: now.toISOString(),
       servings: draft.servings,
     });
     if (!entry) {
@@ -85,10 +103,69 @@ export function NutritionDiaryView({
       return;
     }
     onEntriesChange((current) => [entry, ...current]);
-    setLastAddedId(entry.id);
+    setLastAddedIds([entry.id]);
     setNotice(
       `Logged ${entry.label} for ${entryDate === currentDate ? "today" : entryDate}.`,
     );
+  };
+  const addBatch = (
+    foods: readonly FoodDiaryFood[],
+    targetDate?: string,
+    mealName?: string,
+  ): boolean => {
+    const now = new Date();
+    const currentDate = foodDiaryDateKey(now);
+    // Copy dates are explicit; only the ordinary "today" view follows midnight.
+    const entryDate = targetDate ?? (date === today ? currentDate : date);
+    if (entryDate > currentDate) {
+      setNotice("Choose today or an earlier diary date.");
+      return false;
+    }
+    const batch = instantiateFoodMeal(foods, {
+      batchId: `food-meal-${crypto.randomUUID()}`,
+      date: entryDate,
+      recordedAt: now.toISOString(),
+      existingIds: entries.map((entry) => entry.id),
+    });
+    if (!batch) {
+      setNotice(
+        "Meal not logged. Check every portion, nutrition value, and destination date.",
+      );
+      return false;
+    }
+    onEntriesChange((current) => [...batch, ...current]);
+    if (!targetDate && entryDate !== date) setDate(entryDate);
+    setLastAddedIds(batch.map((entry) => entry.id));
+    setNotice(
+      `${targetDate ? "Copied" : "Logged"} ${batch.length} foods${mealName ? ` from ${mealName}` : ""} for ${entryDate === currentDate ? "today" : entryDate}. Original foods and saved portions are unchanged.`,
+    );
+    return true;
+  };
+  const saveMeal = (name: string, foods: FoodDiaryEntry[]): boolean => {
+    const nameKey = (value: string) =>
+      value.trim().replace(/\s+/g, " ").toLowerCase();
+    if (savedMeals.some((meal) => nameKey(meal.name) === nameKey(name))) {
+      setNotice("A saved meal already has that name. Choose another name.");
+      return false;
+    }
+    const meal = createSavedFoodMeal({
+      id: `meal-${crypto.randomUUID()}`,
+      name,
+      items: foods,
+      createdAt: new Date().toISOString(),
+    });
+    if (!meal) {
+      setNotice(
+        "Meal not saved. Add a name and select foods with valid portions.",
+      );
+      return false;
+    }
+    onSavedMealsChange((current) => [meal, ...current]);
+    setLastAddedIds([]);
+    setNotice(
+      `Saved ${meal.name} with ${meal.items.length} foods. No additional food was logged.`,
+    );
+    return true;
   };
   const difference = targets.calories - totals.calories;
   return (
@@ -185,17 +262,21 @@ export function NutritionDiaryView({
               role="status"
             >
               <span>{notice}</span>
-              {lastAddedId &&
-              entries.some((entry) => entry.id === lastAddedId) ? (
+              {lastAddedIds.length > 0 &&
+              entries.some((entry) => lastAddedIds.includes(entry.id)) ? (
                 <Button
                   variant="outline"
                   className="min-h-11 shrink-0"
                   onClick={() => {
                     onEntriesChange((current) =>
-                      current.filter((entry) => entry.id !== lastAddedId),
+                      undoFoodDiaryBatch(current, lastAddedIds),
                     );
-                    setNotice("Food entry undone.");
-                    setLastAddedId(null);
+                    setNotice(
+                      lastAddedIds.length === 1
+                        ? "Food entry undone."
+                        : "The entire food batch was undone. Original entries are unchanged.",
+                    );
+                    setLastAddedIds([]);
                   }}
                 >
                   Undo
@@ -203,6 +284,22 @@ export function NutritionDiaryView({
               ) : null}
             </div>
           ) : null}
+          <SavedMealsPanel
+            meals={savedMeals}
+            selectedDate={date}
+            today={today}
+            onLog={(meal) => addBatch(meal.items, undefined, meal.name)}
+            onDelete={(id) =>
+              onSavedMealsChange((current) =>
+                current.filter((meal) => meal.id !== id),
+              )
+            }
+            onRestore={(meal) =>
+              onSavedMealsChange((current) =>
+                restoreSavedFoodMeal(current, meal),
+              )
+            }
+          />
         </div>
         <FoodDiaryPanel
           entries={entries}
@@ -211,6 +308,8 @@ export function NutritionDiaryView({
           onDateChange={setDate}
           legacyTotals={legacyTotals}
           onRepeat={add}
+          onSaveMeal={saveMeal}
+          onCopyEntries={(foods, targetDate) => addBatch(foods, targetDate)}
           onResize={(id, servings) =>
             onEntriesChange((current) =>
               current.map((entry) =>

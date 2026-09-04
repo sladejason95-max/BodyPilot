@@ -26,6 +26,8 @@ export type FoodDiaryPanelProps = {
   onDelete: (id: string) => void;
   onRestore: (entry: FoodDiaryEntry) => void;
   onRepeat: (entry: FoodDiaryEntry) => void;
+  onSaveMeal: (name: string, entries: FoodDiaryEntry[]) => boolean;
+  onCopyEntries: (entries: FoodDiaryEntry[], targetDate: string) => boolean;
   legacyTotals?: FoodTotals;
 };
 
@@ -59,6 +61,8 @@ export function FoodDiaryPanel({
   onDelete,
   onRestore,
   onRepeat,
+  onSaveMeal,
+  onCopyEntries,
   legacyTotals,
 }: FoodDiaryPanelProps) {
   const panelId = useId();
@@ -67,7 +71,15 @@ export function FoodDiaryPanel({
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [removedEntries, setRemovedEntries] = useState<FoodDiaryEntry[]>([]);
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [mealName, setMealName] = useState("");
+  const [copyDate, setCopyDate] = useState(today);
+  const [selectionError, setSelectionError] = useState("");
   const dayEntries = entries.filter((entry) => entry.date === selectedDate);
+  const selectedEntries = dayEntries.filter((entry) =>
+    selectedIds.includes(entry.id),
+  );
   const totals = foodDiaryTotals(entries, selectedDate);
   const recentEntries = recentFoodDiaryEntries(entries);
   const lastRemoved = removedEntries[removedEntries.length - 1];
@@ -87,6 +99,10 @@ export function FoodDiaryPanel({
     setEditingId(null);
     setError("");
     setStatus("");
+    setSelecting(false);
+    setSelectedIds([]);
+    setMealName("");
+    setSelectionError("");
   }, [selectedDate]);
 
   useEffect(() => {
@@ -152,10 +168,185 @@ export function FoodDiaryPanel({
         </div>
 
         {dayEntries.length ? (
+          <div className="mb-3">
+            <Button
+              variant="outline"
+              className={actionClass}
+              aria-expanded={selecting}
+              onClick={() => {
+                setSelecting(!selecting);
+                setSelectedIds(
+                  selecting ? [] : dayEntries.map((entry) => entry.id),
+                );
+                setEditingId(null);
+                setMealName("");
+                setCopyDate(today);
+                setError("");
+                setSelectionError("");
+              }}
+            >
+              {selecting ? "Cancel selection" : "Select / copy foods"}
+            </Button>
+            {selecting ? (
+              <div className="mt-3 grid gap-3 rounded-xl border border-slate-200 p-3 dark:border-white/10">
+                <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="h-5 w-5 shrink-0"
+                    checked={selectedEntries.length === dayEntries.length}
+                    onChange={(event) =>
+                      setSelectedIds(
+                        event.target.checked
+                          ? dayEntries.map((entry) => entry.id)
+                          : [],
+                      )
+                    }
+                  />
+                  Select all {dayEntries.length} foods from {dateLabel}
+                </label>
+                <div>
+                  <p className="mb-1 text-xs font-medium">
+                    {selectedEntries.length} foods selected · exact logged
+                    portions
+                  </p>
+                  <MacroSummary
+                    totals={foodDiaryTotals(selectedEntries, selectedDate)}
+                  />
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Uncheck foods below to build a smaller meal.
+                  </p>
+                </div>
+                <form
+                  className="grid gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (!selectedEntries.length || !mealName.trim()) return;
+                    if (onSaveMeal(mealName, selectedEntries)) {
+                      setStatus(
+                        `Saved ${mealName.trim()}. No additional food was logged.`,
+                      );
+                      setSelecting(false);
+                      setSelectedIds([]);
+                      setMealName("");
+                      setSelectionError("");
+                    } else {
+                      setSelectionError(
+                        "Meal not saved. Use a unique name and check the selected portions.",
+                      );
+                    }
+                  }}
+                >
+                  <label className="text-xs">
+                    Saved meal name
+                    <Input
+                      aria-label="Saved meal name"
+                      value={mealName}
+                      maxLength={80}
+                      placeholder="e.g. Usual breakfast"
+                      onChange={(event) => {
+                        setMealName(event.target.value);
+                        setSelectionError("");
+                      }}
+                      className="mt-1 !h-11"
+                    />
+                  </label>
+                  <Button
+                    type="submit"
+                    variant="outline"
+                    className={actionClass}
+                    disabled={!selectedEntries.length || !mealName.trim()}
+                  >
+                    Save selected as meal
+                  </Button>
+                </form>
+                <form
+                  className="grid gap-2 border-t border-slate-200 pt-3 dark:border-white/10"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (
+                      !selectedEntries.length ||
+                      !copyDate ||
+                      copyDate > today
+                    )
+                      return;
+                    if (onCopyEntries(selectedEntries, copyDate)) {
+                      setStatus(
+                        `Copied ${selectedEntries.length} foods to ${copyDate}. Original entries are unchanged.`,
+                      );
+                      setSelecting(false);
+                      setSelectedIds([]);
+                      setSelectionError("");
+                    } else {
+                      setSelectionError(
+                        "Nothing was copied. Check every portion and choose a valid date.",
+                      );
+                    }
+                  }}
+                >
+                  <label className="text-xs">
+                    Copy to date
+                    <Input
+                      aria-label="Copy foods to date"
+                      type="date"
+                      max={today}
+                      value={copyDate}
+                      onInput={(event) =>
+                        setCopyDate(event.currentTarget.value)
+                      }
+                      onChange={(event) => setCopyDate(event.target.value)}
+                      className="mt-1 !h-11 min-w-0 max-w-full"
+                      required
+                    />
+                  </label>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Adds new entries to that day; never replaces existing food.
+                  </p>
+                  <Button
+                    type="submit"
+                    className={`${actionClass} whitespace-normal py-2`}
+                    disabled={
+                      !selectedEntries.length || !copyDate || copyDate > today
+                    }
+                  >
+                    Copy {selectedEntries.length} foods to{" "}
+                    {copyDate || "chosen date"}
+                  </Button>
+                </form>
+                {selectionError ? (
+                  <p
+                    role="alert"
+                    className="text-xs text-rose-700 dark:text-rose-300"
+                  >
+                    {selectionError}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {dayEntries.length ? (
           <ul className="divide-y divide-slate-200 dark:divide-white/10">
             {dayEntries.map((entry) => (
               <li key={entry.id} className="min-w-0 py-3 first:pt-0">
                 <div className="flex min-w-0 items-start gap-2">
+                  {selecting ? (
+                    <label className="flex min-h-11 min-w-11 cursor-pointer items-center justify-center">
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5"
+                        aria-label={`Select ${entry.label}, ${portionText(entry)}`}
+                        checked={selectedIds.includes(entry.id)}
+                        onChange={(event) =>
+                          setSelectedIds((current) =>
+                            event.target.checked
+                              ? [...current, entry.id]
+                              : current.filter((id) => id !== entry.id),
+                          )
+                        }
+                      />
+                    </label>
+                  ) : null}
                   <div className="min-w-0 flex-1">
                     <div className="break-words text-sm font-medium text-slate-950 dark:text-white">
                       {entry.label}
@@ -170,7 +361,9 @@ export function FoodDiaryPanel({
                     </div>
                     <MacroSummary totals={entry} />
                   </div>
-                  <div className="flex shrink-0 gap-1">
+                  <div
+                    className={`shrink-0 gap-1 ${selecting ? "hidden" : "flex"}`}
+                  >
                     <Button
                       id={`${panelId}-edit-button-${entry.id}`}
                       variant="ghost"
